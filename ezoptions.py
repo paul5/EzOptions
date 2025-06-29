@@ -110,24 +110,63 @@ def check_market_status():
         """
     return market_message
 
+def get_cache_ttl():
+    """Get the cache TTL from session state refresh rate, with a minimum of 10 seconds"""
+    return max(float(st.session_state.get('refresh_rate', 10)), 10)
+
+@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
 def fetch_options_for_date(ticker, date, S=None):
-    """
-    Fetches option chains for the given ticker and date.
-    Returns two DataFrames: one for calls and one for puts.
-    """
+    """Fetch options data for a specific date with caching"""
     print(f"Fetching option chain for {ticker} EXP {date}")
-    stock = yf.Ticker(ticker)
     try:
-        if S is None:
-            S = get_current_price(ticker)
+        stock = yf.Ticker(ticker)
         chain = stock.option_chain(date)
         calls = chain.calls
         puts = chain.puts
-        calls['extracted_expiry'] = calls['contractSymbol'].apply(extract_expiry_from_contract)
-        puts['extracted_expiry'] = puts['contractSymbol'].apply(extract_expiry_from_contract)
+        
+        if not calls.empty:
+            calls = calls.copy()
+            calls['extracted_expiry'] = calls['contractSymbol'].apply(extract_expiry_from_contract)
+        if not puts.empty:
+            puts = puts.copy()
+            puts['extracted_expiry'] = puts['contractSymbol'].apply(extract_expiry_from_contract)
+            
         return calls, puts
     except Exception as e:
-        st.error(f"Error fetching options chain for date {date}: {e}")
+        st.error(f"Error fetching options data: {e}")
+        return pd.DataFrame(), pd.DataFrame()
+
+@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
+def fetch_all_options(ticker):
+    """Fetch all available options with caching"""
+    print(f"Fetching all options for {ticker}")
+    try:
+        stock = yf.Ticker(ticker)
+        all_calls = []
+        all_puts = []
+        
+        for next_exp in stock.options:
+            try:
+                calls, puts = fetch_options_for_date(ticker, next_exp)
+                if not calls.empty:
+                    all_calls.append(calls)
+                if not puts.empty:
+                    all_puts.append(puts)
+            except Exception as e:
+                st.error(f"Error fetching fallback options data: {e}")
+        
+        if all_calls:
+            combined_calls = pd.concat(all_calls, ignore_index=True)
+        else:
+            combined_calls = pd.DataFrame()
+        if all_puts:
+            combined_puts = pd.concat(all_puts, ignore_index=True)
+        else:
+            combined_puts = pd.DataFrame()
+        
+        return combined_calls, combined_puts
+    except Exception as e:
+        st.error(f"Error fetching all options: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
 def clear_page_state():
@@ -179,6 +218,7 @@ def add_current_price_line(fig, current_price):
     )
     return fig
 
+@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
 def get_screener_data(screener_type):
     """Fetch screener data from Yahoo Finance"""
     try:
@@ -849,6 +889,7 @@ def fetch_all_options(ticker):
     return combined_calls, combined_puts
 
 # Charts and price fetching
+@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
 def get_current_price(ticker):
     """Get current price with fallback logic"""
     print(f"Fetching current price for {ticker}")
@@ -1283,6 +1324,7 @@ def fetch_and_process_multiple_dates(ticker, expiry_dates, process_func):
         return combined_calls, combined_puts
     return pd.DataFrame(), pd.DataFrame()
 
+@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
 def get_combined_intraday_data(ticker):
     """Get intraday data with fallback logic"""
     formatted_ticker = ticker.replace('%5E', '^')
@@ -1353,7 +1395,7 @@ def get_combined_intraday_data(ticker):
             latest_price = yahoo_last_price
     else:
         try:
-            price = get_current_price(ticker)
+            price = get_current_price(ticker)  # Use cached get_current_price
             if price is not None:
                 latest_price = round(float(price), 2)
                 last_idx = intraday_data.index[-1]
@@ -2342,15 +2384,14 @@ def create_max_pain_chart(calls, puts, S):
     
     return fig
 
+@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
 def get_nearest_expiry(available_dates):
-    """Get the nearest expiration date from the list of available dates."""
+    """Get the nearest expiry date from a list of available dates"""
     if not available_dates:
         return None
     
     today = datetime.now().date()
-    future_dates = [datetime.strptime(date, '%Y-%m-%d').date() 
-                   for date in available_dates 
-                   if datetime.strptime(date, '%Y-%m-%d').date() >= today]
+    future_dates = [datetime.strptime(date, '%Y-%m-%d').date() for date in available_dates if datetime.strptime(date, '%Y-%m-%d').date() >= today]
     
     if not future_dates:
         return None
