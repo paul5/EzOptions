@@ -7,9 +7,6 @@ from plotly.subplots import make_subplots
 from datetime import datetime
 import math
 from math import log, sqrt
-from py_vollib.black_scholes.greeks.analytical import delta as bs_delta
-from py_vollib.black_scholes.greeks.analytical import gamma as bs_gamma
-from py_vollib.black_scholes.greeks.analytical import vega as bs_vega
 import re
 import time
 from scipy.stats import norm
@@ -1132,7 +1129,7 @@ if 'risk_free_rate' not in st.session_state:
 
 def calculate_greeks(flag, S, K, t, sigma):
     """
-    Calculate delta, gamma and vanna for an option.
+    Calculate delta, gamma and vanna for an option using Black-Scholes model.
     t: time to expiration in years.
     flag: 'c' for call, 'p' for put.
     """
@@ -1144,12 +1141,19 @@ def calculate_greeks(flag, S, K, t, sigma):
         d1 = (log(S / K) + (r + 0.5 * sigma**2) * t) / (sigma * sqrt(t))
         d2 = d1 - sigma * sqrt(t)
         
-        # Update py_vollib calls to use the risk-free rate
-        delta_val = bs_delta(flag, S, K, t, r, sigma)
-        gamma_val = bs_gamma(flag, S, K, t, r, sigma)
-        vega_val = bs_vega(flag, S, K, t, r, sigma)
+        # Calculate delta
+        if flag == 'c':
+            delta_val = norm.cdf(d1)
+        else:  # put
+            delta_val = norm.cdf(d1) - 1
         
-        # Correct vanna calculation with risk-free rate
+        # Calculate gamma
+        gamma_val = norm.pdf(d1) / (S * sigma * sqrt(t))
+        
+        # Calculate vega
+        vega_val = S * norm.pdf(d1) * sqrt(t)
+        
+        # Calculate vanna
         vanna_val = -norm.pdf(d1) * d2 / sigma
         
         return delta_val, gamma_val, vanna_val
@@ -1170,7 +1174,6 @@ def calculate_charm(flag, S, K, t, sigma):
         
         norm_d1 = norm.pdf(d1)
         
-        # Correct charm formula with risk-free rate
         if flag == 'c':
             charm = -norm_d1 * (2*(r + 0.5*sigma**2)*t - d2*sigma*sqrt(t)) / (2*t*sigma*sqrt(t))
         else:  # put
@@ -1191,9 +1194,12 @@ def calculate_speed(flag, S, K, t, sigma):
         r = st.session_state.risk_free_rate  # Use cached rate from session state
         
         d1 = (log(S / K) + (r + 0.5 * sigma**2) * t) / (sigma * sqrt(t))
+        d2 = d1 - sigma * sqrt(t)
         
-        # Correct speed formula with risk-free rate
-        gamma = bs_gamma(flag, S, K, t, r, sigma)
+        # Calculate gamma manually
+        gamma = norm.pdf(d1) / (S * sigma * sqrt(t))
+        
+        # Calculate speed
         speed = -gamma * (d1/(sigma * sqrt(t)) + 1) / S
         
         return speed
@@ -1212,8 +1218,10 @@ def calculate_vomma(flag, S, K, t, sigma):
         d1 = (log(S / K) + (r + 0.5 * sigma**2) * t) / (sigma * sqrt(t))
         d2 = d1 - sigma * sqrt(t)
         
-        # Correct vomma formula with risk-free rate
-        vega = bs_vega(flag, S, K, t, r, sigma)
+        # Calculate vega manually
+        vega = S * norm.pdf(d1) * sqrt(t)
+        
+        # Calculate vomma
         vomma = vega * (d1 * d2) / sigma
         
         return vomma
