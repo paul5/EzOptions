@@ -209,19 +209,28 @@ def extract_expiry_from_contract(contract_symbol):
 
 def add_current_price_line(fig, current_price):
     """
-    Adds a vertical dashed white line at the current price to a Plotly figure.
+    Adds a dashed white line at the current price to a Plotly figure.
+    For horizontal bar charts, adds a horizontal line. For other charts, adds a vertical line.
     """
-    fig.add_vline(
-        x=current_price,
-        line_dash="dash",
-        line_color="white",
-        opacity=0.7,
-        annotation_text=f"{current_price}",
-        annotation_position="top",
-        annotation=dict(
-            font=dict(size=st.session_state.chart_text_size)
+    if st.session_state.chart_type == 'Horizontal Bar':
+        fig.add_hline(
+            y=current_price,
+            line_dash="dash",
+            line_color="white",
+            opacity=0.7
         )
-    )
+    else:
+        fig.add_vline(
+            x=current_price,
+            line_dash="dash",
+            line_color="white",
+            opacity=0.7,
+            annotation_text=f"{current_price}",
+            annotation_position="top",
+            annotation=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            )
+        )
     return fig
 
 @st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
@@ -994,6 +1003,14 @@ def create_oi_volume_charts(calls, puts, S):
                 name='Call',
                 marker_color=call_color
             ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig_oi.add_trace(go.Bar(
+                y=calls_oi_df['strike'],
+                x=calls_oi_df['openInterest'],
+                name='Call',
+                marker_color=call_color,
+                orientation='h'
+            ))
         elif st.session_state.chart_type == 'Scatter':
             fig_oi.add_trace(go.Scatter(
                 x=calls_oi_df['strike'],
@@ -1030,6 +1047,14 @@ def create_oi_volume_charts(calls, puts, S):
                 name='Put',
                 marker_color=put_color
             ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig_oi.add_trace(go.Bar(
+                y=puts_oi_df['strike'],
+                x=puts_oi_df['openInterest'],
+                name='Put',
+                marker_color=put_color,
+                orientation='h'
+            ))
         elif st.session_state.chart_type == 'Scatter':
             fig_oi.add_trace(go.Scatter(
                 x=puts_oi_df['strike'],
@@ -1065,6 +1090,14 @@ def create_oi_volume_charts(calls, puts, S):
                 y=net_oi.values,
                 name='Net OI',
                 marker_color=[call_color if val >= 0 else put_color for val in net_oi.values]
+            ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig_oi.add_trace(go.Bar(
+                y=net_oi.index,
+                x=net_oi.values,
+                name='Net OI',
+                marker_color=[call_color if val >= 0 else put_color for val in net_oi.values],
+                orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
             positive_mask = net_oi.values >= 0
@@ -1142,38 +1175,68 @@ def create_oi_volume_charts(calls, puts, S):
     padding = strike_range * 0.1
     
     # Update OI chart layout
-    fig_oi.update_layout(
-        title=dict(
-            text=oi_title_with_totals,
-            x=0,
-            xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
-        ),
-        xaxis_title=dict(
-            text='Strike Price',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        yaxis_title=dict(
-            text='Open Interest',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        legend=dict(
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        hovermode='x unified',
-        xaxis=dict(
-            range=[min_strike - padding, max_strike + padding],
-            tickmode='linear',
-            dtick=math.ceil(strike_range / 10),
-            tickfont=dict(size=st.session_state.chart_text_size)
-        ),
-        yaxis=dict(
-            range=[oi_y_min, oi_y_max],
-            tickfont=dict(size=st.session_state.chart_text_size)
-        ),
-        template="plotly_dark",
-        height=600  # Increased height for better visibility
-    )
+    if st.session_state.chart_type == 'Horizontal Bar':
+        fig_oi.update_layout(
+            title=dict(
+                text=oi_title_with_totals,
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)
+            ),
+            xaxis_title=dict(
+                text='Open Interest',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis_title=dict(
+                text='Strike Price',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            legend=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            hovermode='y unified',
+            xaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            template="plotly_dark",
+            height=600  # Increased height for better visibility
+        )
+    else:
+        fig_oi.update_layout(
+            title=dict(
+                text=oi_title_with_totals,
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)
+            ),
+            xaxis_title=dict(
+                text='Strike Price',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis_title=dict(
+                text='Open Interest',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            legend=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            hovermode='x unified',
+            xaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            template="plotly_dark",
+            height=600  # Increased height for better visibility
+        )
     
     # Create Volume Chart
     fig_volume = go.Figure()
@@ -1186,6 +1249,14 @@ def create_oi_volume_charts(calls, puts, S):
                 y=calls_vol_df['volume'],
                 name='Call',
                 marker_color=call_color
+            ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig_volume.add_trace(go.Bar(
+                y=calls_vol_df['strike'],
+                x=calls_vol_df['volume'],
+                name='Call',
+                marker_color=call_color,
+                orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
             fig_volume.add_trace(go.Scatter(
@@ -1223,6 +1294,14 @@ def create_oi_volume_charts(calls, puts, S):
                 name='Put',
                 marker_color=put_color
             ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig_volume.add_trace(go.Bar(
+                y=puts_vol_df['strike'],
+                x=puts_vol_df['volume'],
+                name='Put',
+                marker_color=put_color,
+                orientation='h'
+            ))
         elif st.session_state.chart_type == 'Scatter':
             fig_volume.add_trace(go.Scatter(
                 x=puts_vol_df['strike'],
@@ -1258,6 +1337,14 @@ def create_oi_volume_charts(calls, puts, S):
                 y=net_volume.values,
                 name='Net Volume',
                 marker_color=[call_color if val >= 0 else put_color for val in net_volume.values]
+            ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig_volume.add_trace(go.Bar(
+                y=net_volume.index,
+                x=net_volume.values,
+                name='Net Volume',
+                marker_color=[call_color if val >= 0 else put_color for val in net_volume.values],
+                orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
             positive_mask = net_volume.values >= 0
@@ -1332,38 +1419,68 @@ def create_oi_volume_charts(calls, puts, S):
         vol_y_max = 100
     
     # Update Volume chart layout
-    fig_volume.update_layout(
-        title=dict(
-            text=volume_title_with_totals,
-            x=0,
-            xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
-        ),
-        xaxis_title=dict(
-            text='Strike Price',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        yaxis_title=dict(
-            text='Volume',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        legend=dict(
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        hovermode='x unified',
-        xaxis=dict(
-            range=[min_strike - padding, max_strike + padding],
-            tickmode='linear',
-            dtick=math.ceil(strike_range / 10),
-            tickfont=dict(size=st.session_state.chart_text_size)
-        ),
-        yaxis=dict(
-            range=[vol_y_min, vol_y_max],
-            tickfont=dict(size=st.session_state.chart_text_size)
-        ),
-        template="plotly_dark",
-        height=600  # Increased height for better visibility
-    )
+    if st.session_state.chart_type == 'Horizontal Bar':
+        fig_volume.update_layout(
+            title=dict(
+                text=volume_title_with_totals,
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)
+            ),
+            xaxis_title=dict(
+                text='Volume',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis_title=dict(
+                text='Strike Price',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            legend=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            hovermode='y unified',
+            xaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            template="plotly_dark",
+            height=600  # Increased height for better visibility
+        )
+    else:
+        fig_volume.update_layout(
+            title=dict(
+                text=volume_title_with_totals,
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)
+            ),
+            xaxis_title=dict(
+                text='Strike Price',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis_title=dict(
+                text='Volume',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            legend=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            hovermode='x unified',
+            xaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            template="plotly_dark",
+            height=600  # Increased height for better visibility
+        )
     
     # Add current price line
     S = round(S, 2)
@@ -2017,8 +2134,8 @@ def chart_settings():
 
         chart_type = st.selectbox(
             "Chart Type:",
-            options=['Bar', 'Scatter', 'Line', 'Area'],
-            index=['Bar', 'Scatter', 'Line', 'Area'].index(st.session_state.chart_type)
+            options=['Bar', 'Horizontal Bar', 'Scatter', 'Line', 'Area'],
+            index=['Bar', 'Horizontal Bar', 'Scatter', 'Line', 'Area'].index(st.session_state.chart_type)
         )
 
         # Update session state when chart type changes
@@ -2027,7 +2144,7 @@ def chart_settings():
 
          
         if 'gex_type' not in st.session_state:
-            st.session_state.gex_type = 'Net'  # Default to Net GEX
+            st.session_state.gex_type = 'Absolute'  # Default to Absolute GEX
         
         gex_type = st.selectbox(
             "Gamma Exposure Type:",
@@ -2189,18 +2306,30 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     calls = calls.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"])
     puts = puts.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"])
 
-    calls["GEX"] = calls["calc_gamma"] * calls["openInterest"] * 100
-    puts["GEX"] = puts["calc_gamma"] * puts["openInterest"] * 100
-    calls["VEX"] = calls["calc_vanna"] * calls["openInterest"] * 100
-    puts["VEX"] = puts["calc_vanna"] * puts["openInterest"] * 100
-    calls["DEX"] = calls["calc_delta"] * calls["openInterest"] * 100
-    puts["DEX"] = puts["calc_delta"] * puts["openInterest"] * 100
-    calls["Charm"] = calls["calc_charm"] * calls["openInterest"] * 100
-    puts["Charm"] = puts["calc_charm"] * puts["openInterest"] * 100
+    # Correct exposure formulas with proper scaling
+    # GEX = Gamma * OI * Contract Size * Spot Price^2 * 0.01 (for 1% move sensitivity)
+    calls["GEX"] = calls["calc_gamma"] * calls["openInterest"] * 100 * S * S * 0.01
+    puts["GEX"] = puts["calc_gamma"] * puts["openInterest"] * 100 * S * S * 0.01
+    
+    # VEX = Vanna * OI * Contract Size * Spot Price * 0.01 (change in dollar delta per 1% vol change)
+    calls["VEX"] = calls["calc_vanna"] * calls["openInterest"] * 100 * S * 0.01
+    puts["VEX"] = puts["calc_vanna"] * puts["openInterest"] * 100 * S * 0.01
+    
+    # DEX = Delta * OI * Contract Size * Spot Price
+    calls["DEX"] = calls["calc_delta"] * calls["openInterest"] * 100 * S
+    puts["DEX"] = puts["calc_delta"] * puts["openInterest"] * 100 * S
+    
+    # Charm = Charm * OI * Contract Size * Spot Price / 365 (change in dollar delta per day)
+    calls["Charm"] = calls["calc_charm"] * calls["openInterest"] * 100 * S / 365.0
+    puts["Charm"] = puts["calc_charm"] * puts["openInterest"] * 100 * S / 365.0
+    
+    # Speed = Total portfolio speed (dGamma/dSpot)
     calls["Speed"] = calls["calc_speed"] * calls["openInterest"] * 100
     puts["Speed"] = puts["calc_speed"] * puts["openInterest"] * 100
-    calls["Vomma"] = calls["calc_vomma"] * calls["openInterest"] * 100
-    puts["Vomma"] = puts["calc_vomma"] * puts["openInterest"] * 100
+    
+    # Vomma = Vomma * OI * Contract Size * 0.01 (change in dollar vega per 1% vol change)
+    calls["Vomma"] = calls["calc_vomma"] * calls["openInterest"] * 100 * 0.01
+    puts["Vomma"] = puts["calc_vomma"] * puts["openInterest"] * 100 * 0.01
 
     return calls, puts, S, t, selected_expiry, today
 
@@ -2255,8 +2384,8 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     # Update title to include total Greek values with colored values using HTML
     title_with_totals = (
         f"{title}     "
-        f"<span style='color: {st.session_state.call_color}'>{total_call_value:.0f}</span> | "
-        f"<span style='color: {st.session_state.put_color}'>{total_put_value:.0f}</span>"
+        f"<span style='color: {st.session_state.call_color}'>{total_call_value:,.0f}</span> | "
+        f"<span style='color: {st.session_state.put_color}'>{total_put_value:,.0f}</span>"
     )
 
     fig = go.Figure()
@@ -2269,6 +2398,14 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 y=calls_df[exposure_type],
                 name='Call',
                 marker_color=call_color
+            ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig.add_trace(go.Bar(
+                y=calls_df['strike'],
+                x=calls_df[exposure_type],
+                name='Call',
+                marker_color=call_color,
+                orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
             fig.add_trace(go.Scatter(
@@ -2306,6 +2443,14 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 name='Put',
                 marker_color=put_color
             ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig.add_trace(go.Bar(
+                y=puts_df['strike'],
+                x=puts_df[exposure_type],
+                name='Put',
+                marker_color=put_color,
+                orientation='h'
+            ))
         elif st.session_state.chart_type == 'Scatter':
             fig.add_trace(go.Scatter(
                 x=puts_df['strike'],
@@ -2341,6 +2486,14 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 y=net_exposure.values,
                 name='Net',
                 marker_color=[call_color if val >= 0 else put_color for val in net_exposure.values]
+            ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig.add_trace(go.Bar(
+                y=net_exposure.index,
+                x=net_exposure.values,
+                name='Net',
+                marker_color=[call_color if val >= 0 else put_color for val in net_exposure.values],
+                orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
             positive_mask = net_exposure.values >= 0
@@ -2419,39 +2572,70 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
 
     # Update layout with calculated y-range
     padding = strike_range * 0.1
-    fig.update_layout(
-        title=dict(
-            text=title_with_totals,
-            xref="paper",
-            x=0,
-            xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)  # Title slightly larger
-        ),
-        xaxis_title=dict(
-            text='Strike Price',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        yaxis_title=dict(
-            text=title,
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        legend=dict(
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        barmode='relative',
-        hovermode='x unified',
-        xaxis=dict(
-            range=[min_strike - padding, max_strike + padding],
-            tickmode='linear',
-            dtick=math.ceil(strike_range / 10),
-            tickfont=dict(size=st.session_state.chart_text_size)
-        ),
-        yaxis=dict(
-            range=[y_min, y_max],
-            tickfont=dict(size=st.session_state.chart_text_size)
-        ),
-        height=600  # Increase chart height for better visibility
-    )
+    if st.session_state.chart_type == 'Horizontal Bar':
+        fig.update_layout(
+            title=dict(
+                text=title_with_totals,
+                xref="paper",
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)  # Title slightly larger
+            ),
+            xaxis_title=dict(
+                text=title,
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis_title=dict(
+                text='Strike Price',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            legend=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            barmode='relative',
+            hovermode='y unified',
+            xaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            height=600  # Increase chart height for better visibility
+        )
+    else:
+        fig.update_layout(
+            title=dict(
+                text=title_with_totals,
+                xref="paper",
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)  # Title slightly larger
+            ),
+            xaxis_title=dict(
+                text='Strike Price',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis_title=dict(
+                text=title,
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            legend=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            barmode='relative',
+            hovermode='x unified',
+            xaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            height=600  # Increase chart height for better visibility
+        )
 
     fig = add_current_price_line(fig, S)
     return fig
@@ -2510,13 +2694,16 @@ def create_max_pain_chart(calls, puts, S):
     
     fig = go.Figure()
 
-    # Add total pain line
-    if st.session_state.chart_type == 'Bar':
+    # Add total pain line (always vertical for max pain chart)
+    # Use a neutral color that works well with both call and put colors
+    total_pain_color = '#FFD700'  # Gold color for total pain
+    
+    if st.session_state.chart_type in ['Bar', 'Horizontal Bar']:
         fig.add_trace(go.Bar(
             x=list(total_pain_by_strike.keys()),
             y=list(total_pain_by_strike.values()),
             name='Total Pain',
-            marker_color='white'
+            marker_color=total_pain_color
         ))
     elif st.session_state.chart_type == 'Line':
         fig.add_trace(go.Scatter(
@@ -2524,7 +2711,7 @@ def create_max_pain_chart(calls, puts, S):
             y=list(total_pain_by_strike.values()),
             mode='lines',
             name='Total Pain',
-            line=dict(color='white', width=2)
+            line=dict(color=total_pain_color, width=2)
         ))
     elif st.session_state.chart_type == 'Scatter':
         fig.add_trace(go.Scatter(
@@ -2532,7 +2719,7 @@ def create_max_pain_chart(calls, puts, S):
             y=list(total_pain_by_strike.values()),
             mode='markers',
             name='Total Pain',
-            marker=dict(color='white')
+            marker=dict(color=total_pain_color)
         ))
     else:  # Area
         fig.add_trace(go.Scatter(
@@ -2540,8 +2727,8 @@ def create_max_pain_chart(calls, puts, S):
             y=list(total_pain_by_strike.values()),
             fill='tozeroy',
             name='Total Pain',
-            line=dict(color='white', width=0.5),
-            fillcolor='rgba(255, 255, 255, 0.3)'
+            line=dict(color=total_pain_color, width=0.5),
+            fillcolor='rgba(255, 215, 0, 0.3)'  # Semi-transparent gold
         ))
 
     # Add call pain line
@@ -2587,7 +2774,7 @@ def create_max_pain_chart(calls, puts, S):
     fig.add_vline(
         x=max_pain_strike,
         line_dash="dash",
-        line_color="white",
+        line_color=total_pain_color,
         opacity=0.7,
         annotation_text=f"Total Max Pain: {max_pain_strike}",
         annotation_position="top"
@@ -2641,20 +2828,18 @@ def create_max_pain_chart(calls, puts, S):
         ),
         hovermode='x unified',
         xaxis=dict(
-            range=[min_strike - padding, max_strike + padding],
-            tickmode='linear',
-            dtick=math.ceil(strike_range / 10),
+            autorange=True,
             tickfont=dict(size=st.session_state.chart_text_size)
         ),
         yaxis=dict(
-            range=[y_min, y_max],
+            autorange=True,
             tickfont=dict(size=st.session_state.chart_text_size)
         ),
         height=600  # Increased height for better visibility
     )
     
-    # Add range slider consistent with other charts
-    fig.update_xaxes(rangeslider=dict(visible=True))
+    # Remove range slider for max pain chart as requested
+    fig.update_xaxes(rangeslider=dict(visible=False))
     
     return fig
 
@@ -2745,8 +2930,8 @@ def create_davi_chart(calls, puts, S):
     # Create title with totals
     title_with_totals = (
         f"Delta-Adjusted Value Index by Strike     "
-        f"<span style='color: {call_color}'>{total_call_davi:.0f}</span> | "
-        f"<span style='color: {put_color}'>{total_put_davi:.0f}</span>"
+        f"<span style='color: {call_color}'>{total_call_davi:,.0f}</span> | "
+        f"<span style='color: {put_color}'>{total_put_davi:,.0f}</span>"
     )
 
     fig = go.Figure()
@@ -2759,6 +2944,14 @@ def create_davi_chart(calls, puts, S):
                 y=calls_df['DAVI'],
                 name='Call',
                 marker_color=call_color
+            ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig.add_trace(go.Bar(
+                y=calls_df['strike'],
+                x=calls_df['DAVI'],
+                name='Call',
+                marker_color=call_color,
+                orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
             fig.add_trace(go.Scatter(
@@ -2795,6 +2988,14 @@ def create_davi_chart(calls, puts, S):
                 name='Put',
                 marker_color=put_color
             ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig.add_trace(go.Bar(
+                y=puts_df['strike'],
+                x=puts_df['DAVI'],
+                name='Put',
+                marker_color=put_color,
+                orientation='h'
+            ))
         elif st.session_state.chart_type == 'Scatter':
             fig.add_trace(go.Scatter(
                 x=puts_df['strike'],
@@ -2829,6 +3030,14 @@ def create_davi_chart(calls, puts, S):
                 y=net_davi.values,
                 name='Net',
                 marker_color=[call_color if val >= 0 else put_color for val in net_davi.values]
+            ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig.add_trace(go.Bar(
+                y=net_davi.index,
+                x=net_davi.values,
+                name='Net',
+                marker_color=[call_color if val >= 0 else put_color for val in net_davi.values],
+                orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
             positive_mask = net_davi.values >= 0
@@ -2876,37 +3085,68 @@ def create_davi_chart(calls, puts, S):
 
     # Update layout
     padding = strike_range * 0.1
-    fig.update_layout(
-        title=dict(
-            text=title_with_totals,
-            x=0,
-            xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
-        ),
-        xaxis_title=dict(
-            text='Strike Price',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        yaxis_title=dict(
-            text='DAVI',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        legend=dict(
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        barmode='relative',
-        hovermode='x unified',
-        xaxis=dict(
-            range=[min_strike - padding, max_strike + padding],
-            tickmode='linear',
-            dtick=math.ceil(strike_range / 10),
-            tickfont=dict(size=st.session_state.chart_text_size)
-        ),
-        yaxis=dict(
-            tickfont=dict(size=st.session_state.chart_text_size)
-        ),
-        height=600  # Increased height for better visibility
-    )
+    if st.session_state.chart_type == 'Horizontal Bar':
+        fig.update_layout(
+            title=dict(
+                text=title_with_totals,
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)
+            ),
+            xaxis_title=dict(
+                text='DAVI',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis_title=dict(
+                text='Strike Price',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            legend=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            barmode='relative',
+            hovermode='y unified',
+            yaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            xaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            height=600  # Increased height for better visibility
+        )
+    else:
+        fig.update_layout(
+            title=dict(
+                text=title_with_totals,
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)
+            ),
+            xaxis_title=dict(
+                text='Strike Price',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis_title=dict(
+                text='DAVI',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            legend=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            barmode='relative',
+            hovermode='x unified',
+            xaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            height=600  # Increased height for better visibility
+        )
 
     return fig
 
@@ -4074,21 +4314,52 @@ if st.session_state.current_page == "Dashboard":
 
                         # Add GEX levels if enabled
                         if st.session_state.show_gex_levels:
-                            options_df = pd.concat([calls, puts]).dropna(subset=['GEX'])
+                            # Calculate strike range around current price (percentage-based)
+                            strike_range = calculate_strike_range(current_price)
+                            min_strike = current_price - strike_range
+                            max_strike = current_price + strike_range
                             
-                            if not options_df.empty:
-                                top5_gex = options_df.nlargest(5, 'GEX')[['strike', 'GEX', 'OptionType']]
+                            # Filter options within strike range
+                            calls_filtered = calls[(calls['strike'] >= min_strike) & (calls['strike'] <= max_strike)]
+                            puts_filtered = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
+                            
+                            # Calculate Net or Absolute GEX based on gex_type setting
+                            if st.session_state.gex_type == 'Net':
+                                # Net GEX: Calls positive, Puts negative
+                                net_gex = calls_filtered.groupby('strike')['GEX'].sum() - puts_filtered.groupby('strike')['GEX'].sum()
+                            else:  # Absolute
+                                # Absolute GEX: Take the larger absolute value at each strike
+                                calls_gex = calls_filtered.groupby('strike')['GEX'].sum()
+                                puts_gex = puts_filtered.groupby('strike')['GEX'].sum()
+                                net_gex = pd.Series(index=set(calls_gex.index) | set(puts_gex.index))
+                                for strike in net_gex.index:
+                                    call_val = abs(calls_gex.get(strike, 0))
+                                    put_val = abs(puts_gex.get(strike, 0))
+                                    net_gex[strike] = call_val if call_val >= put_val else -put_val
+                            
+                            # Remove zero values and get top 5 by absolute value
+                            net_gex = net_gex[net_gex != 0]
+                            if not net_gex.empty:
+                                # Create DataFrame for easier manipulation
+                                gex_df = pd.DataFrame({
+                                    'strike': net_gex.index,
+                                    'GEX': net_gex.values,
+                                    'abs_GEX': abs(net_gex.values)
+                                })
+                                
+                                # Get top 5 by absolute GEX value
+                                top5_gex = gex_df.nlargest(5, 'abs_GEX')
                                 top5_gex['distance'] = abs(top5_gex['strike'] - current_price)
                                 nearest_3_gex = top5_gex.nsmallest(3, 'distance')
-                                max_gex = abs(top5_gex['GEX']).max()
+                                max_gex = top5_gex['abs_GEX'].max()
 
                                 for row in top5_gex.itertuples():
                                     if row.strike not in added_strikes and not pd.isna(row.GEX) and row.GEX != 0:
                                         # Calculate intensity based on GEX value relative to max
-                                        intensity = max(0.6, min(1.0, abs(row.GEX) / max_gex))  # Changed minimum from 0.3 to 0.6
+                                        intensity = max(0.6, min(1.0, row.abs_GEX / max_gex))  # Use abs_GEX for intensity
                                         
-                                        # Get base color from session state
-                                        base_color = st.session_state.call_color if row.OptionType == 'Call' else st.session_state.put_color
+                                        # Determine color based on GEX sign (positive = call color, negative = put color)
+                                        base_color = st.session_state.call_color if row.GEX >= 0 else st.session_state.put_color
                                         
                                         # Convert hex to RGB
                                         rgb = tuple(int(base_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
@@ -4112,10 +4383,11 @@ if st.session_state.current_page == "Dashboard":
                                         )
                                         
                                         # Add text annotation positioned to the right of the chart
+                                        gex_label = f"GEX {row.GEX:,.0f}"
                                         fig_intraday.add_annotation(
                                             x=0.92,
                                             y=row.strike,
-                                            text=f"GEX {row.GEX:,.0f}",
+                                            text=gex_label,
                                             font=dict(color=color, size=st.session_state.chart_text_size - 2),
                                             showarrow=False,
                                             xref="paper",  # Use paper coordinates for x
