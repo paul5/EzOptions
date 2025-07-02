@@ -114,6 +114,12 @@ def get_cache_ttl():
     """Get the cache TTL from session state refresh rate, with a minimum of 10 seconds"""
     return max(float(st.session_state.get('refresh_rate', 10)), 10)
 
+def calculate_strike_range(current_price, percentage=None):
+    """Calculate strike range based on percentage of current price"""
+    if percentage is None:
+        percentage = st.session_state.get('strike_range', 1.0)
+    return current_price * (percentage / 100.0)
+
 @st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
 def fetch_options_for_date(ticker, date, S=None):
     """Fetch options data for a specific date with caching"""
@@ -919,57 +925,198 @@ def get_current_price(ticker):
     return None
 
 def create_oi_volume_charts(calls, puts, S):
-    # Remove get_current_price call since S is passed in
     if S is None:
         st.error("Could not fetch underlying price.")
         return
 
-    # Calculate strike range around current price
-    min_strike = S - st.session_state.strike_range
-    max_strike = S + st.session_state.strike_range
-    
-    # Filter data based on strike range
-    calls = calls[(calls['strike'] >= min_strike) & (calls['strike'] <= max_strike)]
-    puts = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
-    
-    calls_df = calls[['strike', 'openInterest', 'volume']].copy()
-    calls_df['OptionType'] = 'Call'
-    
-    puts_df = puts[['strike', 'openInterest', 'volume']].copy()
-    puts_df['OptionType'] = 'Put'
-    
-    combined = pd.concat([calls_df, puts_df], ignore_index=True)
-    combined.sort_values(by='strike', inplace=True)
-    
-    # Calculate Net Open Interest and Net Volume using filtered data
-    net_oi = calls.groupby('strike')['openInterest'].sum() - puts.groupby('strike')['openInterest'].sum()
-    net_volume = calls.groupby('strike')['volume'].sum() - puts.groupby('strike')['volume'].sum()
-    
-    # Add padding for x-axis range
-    padding = st.session_state.strike_range * 0.1
-    
+    # Get colors from session state at the start
     call_color = st.session_state.call_color
     put_color = st.session_state.put_color
 
-    fig_oi = px.bar(
-        combined,
-        x='strike',
-        y='openInterest',
-        color='OptionType',
-        title='Open Interest by Strike',
-        barmode='relative',
-        color_discrete_map={'Call': call_color, 'Put': put_color}
+    # Calculate strike range around current price (percentage-based)
+    strike_range = calculate_strike_range(S)
+    min_strike = S - strike_range
+    max_strike = S + strike_range
+    
+    # Filter data based on strike range
+    calls_filtered = calls[(calls['strike'] >= min_strike) & (calls['strike'] <= max_strike)]
+    puts_filtered = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
+    
+    # Create separate dataframes for OI and Volume, filtering out zeros
+    calls_oi_df = calls_filtered[['strike', 'openInterest']].copy()
+    calls_oi_df = calls_oi_df[calls_oi_df['openInterest'] > 0]  # Changed from != 0 to > 0
+    calls_oi_df['OptionType'] = 'Call'
+    
+    puts_oi_df = puts_filtered[['strike', 'openInterest']].copy()
+    puts_oi_df = puts_oi_df[puts_oi_df['openInterest'] > 0]  # Changed from != 0 to > 0
+    puts_oi_df['OptionType'] = 'Put'
+    
+    calls_vol_df = calls_filtered[['strike', 'volume']].copy()
+    calls_vol_df = calls_vol_df[calls_vol_df['volume'] > 0]  # Changed from != 0 to > 0
+    calls_vol_df['OptionType'] = 'Call'
+    
+    puts_vol_df = puts_filtered[['strike', 'volume']].copy()
+    puts_vol_df = puts_vol_df[puts_vol_df['volume'] > 0]  # Changed from != 0 to > 0
+    puts_vol_df['OptionType'] = 'Put'
+    
+    # Calculate Net Open Interest and Net Volume using filtered data
+    net_oi = calls_filtered.groupby('strike')['openInterest'].sum() - puts_filtered.groupby('strike')['openInterest'].sum()
+    net_volume = calls_filtered.groupby('strike')['volume'].sum() - puts_filtered.groupby('strike')['volume'].sum()
+    
+    # Calculate total values for titles (handle empty dataframes)
+    total_call_oi = calls_oi_df['openInterest'].sum() if not calls_oi_df.empty else 0
+    total_put_oi = puts_oi_df['openInterest'].sum() if not puts_oi_df.empty else 0
+    total_call_volume = calls_vol_df['volume'].sum() if not calls_vol_df.empty else 0
+    total_put_volume = puts_vol_df['volume'].sum() if not puts_vol_df.empty else 0
+    
+    # Create titles with totals using HTML for colored values
+    oi_title_with_totals = (
+        f"Open Interest by Strike     "
+        f"<span style='color: {call_color}'>{total_call_oi:,.0f}</span> | "
+        f"<span style='color: {put_color}'>{total_put_oi:,.0f}</span>"
     )
     
-    # Add Net OI trace as bar
-    if st.session_state.show_net:
-        fig_oi.add_trace(go.Bar(
-            x=net_oi.index, 
-            y=net_oi.values, 
-            name='Net OI', 
-            marker=dict(color=[call_color if val >= 0 else put_color for val in net_oi.values])
-        ))
+    volume_title_with_totals = (
+        f"Volume by Strike     "
+        f"<span style='color: {call_color}'>{total_call_volume:,.0f}</span> | "
+        f"<span style='color: {put_color}'>{total_put_volume:,.0f}</span>"
+    )
     
+    # Create Open Interest Chart
+    fig_oi = go.Figure()
+    
+    # Add calls if enabled and data exists
+    if st.session_state.show_calls and not calls_oi_df.empty:
+        if st.session_state.chart_type == 'Bar':
+            fig_oi.add_trace(go.Bar(
+                x=calls_oi_df['strike'],
+                y=calls_oi_df['openInterest'],
+                name='Call',
+                marker_color=call_color
+            ))
+        elif st.session_state.chart_type == 'Scatter':
+            fig_oi.add_trace(go.Scatter(
+                x=calls_oi_df['strike'],
+                y=calls_oi_df['openInterest'],
+                mode='markers',
+                name='Call',
+                marker=dict(color=call_color)
+            ))
+        elif st.session_state.chart_type == 'Line':
+            fig_oi.add_trace(go.Scatter(
+                x=calls_oi_df['strike'],
+                y=calls_oi_df['openInterest'],
+                mode='lines',
+                name='Call',
+                line=dict(color=call_color)
+            ))
+        elif st.session_state.chart_type == 'Area':
+            fig_oi.add_trace(go.Scatter(
+                x=calls_oi_df['strike'],
+                y=calls_oi_df['openInterest'],
+                mode='lines',
+                fill='tozeroy',
+                name='Call',
+                line=dict(color=call_color, width=0.5),
+                fillcolor=call_color
+            ))
+
+    # Add puts if enabled and data exists
+    if st.session_state.show_puts and not puts_oi_df.empty:
+        if st.session_state.chart_type == 'Bar':
+            fig_oi.add_trace(go.Bar(
+                x=puts_oi_df['strike'],
+                y=puts_oi_df['openInterest'],
+                name='Put',
+                marker_color=put_color
+            ))
+        elif st.session_state.chart_type == 'Scatter':
+            fig_oi.add_trace(go.Scatter(
+                x=puts_oi_df['strike'],
+                y=puts_oi_df['openInterest'],
+                mode='markers',
+                name='Put',
+                marker=dict(color=put_color)
+            ))
+        elif st.session_state.chart_type == 'Line':
+            fig_oi.add_trace(go.Scatter(
+                x=puts_oi_df['strike'],
+                y=puts_oi_df['openInterest'],
+                mode='lines',
+                name='Put',
+                line=dict(color=put_color)
+            ))
+        elif st.session_state.chart_type == 'Area':
+            fig_oi.add_trace(go.Scatter(
+                x=puts_oi_df['strike'],
+                y=puts_oi_df['openInterest'],
+                mode='lines',
+                fill='tozeroy',
+                name='Put',
+                line=dict(color=put_color, width=0.5),
+                fillcolor=put_color
+            ))
+
+    # Add Net OI if enabled
+    if st.session_state.show_net and not net_oi.empty:
+        if st.session_state.chart_type == 'Bar':
+            fig_oi.add_trace(go.Bar(
+                x=net_oi.index,
+                y=net_oi.values,
+                name='Net OI',
+                marker_color=[call_color if val >= 0 else put_color for val in net_oi.values]
+            ))
+        elif st.session_state.chart_type in ['Scatter', 'Line']:
+            positive_mask = net_oi.values >= 0
+            
+            # Plot positive values
+            if any(positive_mask):
+                fig_oi.add_trace(go.Scatter(
+                    x=net_oi.index[positive_mask],
+                    y=net_oi.values[positive_mask],
+                    mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
+                    name='Net OI (Positive)',
+                    marker=dict(color=call_color) if st.session_state.chart_type == 'Scatter' else None,
+                    line=dict(color=call_color) if st.session_state.chart_type == 'Line' else None
+                ))
+            
+            # Plot negative values
+            if any(~positive_mask):
+                fig_oi.add_trace(go.Scatter(
+                    x=net_oi.index[~positive_mask],
+                    y=net_oi.values[~positive_mask],
+                    mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
+                    name='Net OI (Negative)',
+                    marker=dict(color=put_color) if st.session_state.chart_type == 'Scatter' else None,
+                    line=dict(color=put_color) if st.session_state.chart_type == 'Line' else None
+                ))
+        elif st.session_state.chart_type == 'Area':
+            positive_mask = net_oi.values >= 0
+            
+            # Plot positive values
+            if any(positive_mask):
+                fig_oi.add_trace(go.Scatter(
+                    x=net_oi.index[positive_mask],
+                    y=net_oi.values[positive_mask],
+                    mode='lines',
+                    fill='tozeroy',
+                    name='Net OI (Positive)',
+                    line=dict(color=call_color, width=0.5),
+                    fillcolor=call_color
+                ))
+            
+            # Plot negative values
+            if any(~positive_mask):
+                fig_oi.add_trace(go.Scatter(
+                    x=net_oi.index[~positive_mask],
+                    y=net_oi.values[~positive_mask],
+                    mode='lines',
+                    fill='tozeroy',
+                    name='Net OI (Negative)',
+                    line=dict(color=put_color, width=0.5),
+                    fillcolor=put_color
+                ))
+
     # Calculate y-axis range with improved padding for OI chart
     y_values = []
     for trace in fig_oi.data:
@@ -991,10 +1138,13 @@ def create_oi_volume_charts(calls, puts, S):
         oi_y_min = 0
         oi_y_max = 100
     
-    # Update OI chart layout with text size settings and improved y-axis range
+    # Add padding for x-axis range
+    padding = strike_range * 0.1
+    
+    # Update OI chart layout
     fig_oi.update_layout(
         title=dict(
-            text='Open Interest by Strike',
+            text=oi_title_with_totals,
             x=0,
             xanchor='left',
             font=dict(size=st.session_state.chart_text_size + 8)
@@ -1014,35 +1164,152 @@ def create_oi_volume_charts(calls, puts, S):
         xaxis=dict(
             range=[min_strike - padding, max_strike + padding],
             tickmode='linear',
-            dtick=math.ceil(st.session_state.strike_range / 10),
+            dtick=math.ceil(strike_range / 10),
             tickfont=dict(size=st.session_state.chart_text_size)
         ),
         yaxis=dict(
             range=[oi_y_min, oi_y_max],
             tickfont=dict(size=st.session_state.chart_text_size)
         ),
-        height=550  # Increased height for better visibility
+        template="plotly_dark",
+        height=600  # Increased height for better visibility
     )
     
-    fig_volume = px.bar(
-        combined,
-        x='strike',
-        y='volume',
-        color='OptionType',
-        title='Volume by Strike',
-        barmode='relative',
-        color_discrete_map={'Call': call_color, 'Put': put_color}
-    )
+    # Create Volume Chart
+    fig_volume = go.Figure()
     
-    # Add Net Volume trace as bar
-    if st.session_state.show_net:
-        fig_volume.add_trace(go.Bar(
-            x=net_volume.index, 
-            y=net_volume.values, 
-            name='Net Volume', 
-            marker=dict(color=[call_color if val >= 0 else put_color for val in net_volume.values])
-        ))
-    
+    # Add calls if enabled and data exists
+    if st.session_state.show_calls and not calls_vol_df.empty:
+        if st.session_state.chart_type == 'Bar':
+            fig_volume.add_trace(go.Bar(
+                x=calls_vol_df['strike'],
+                y=calls_vol_df['volume'],
+                name='Call',
+                marker_color=call_color
+            ))
+        elif st.session_state.chart_type == 'Scatter':
+            fig_volume.add_trace(go.Scatter(
+                x=calls_vol_df['strike'],
+                y=calls_vol_df['volume'],
+                mode='markers',
+                name='Call',
+                marker=dict(color=call_color)
+            ))
+        elif st.session_state.chart_type == 'Line':
+            fig_volume.add_trace(go.Scatter(
+                x=calls_vol_df['strike'],
+                y=calls_vol_df['volume'],
+                mode='lines',
+                name='Call',
+                line=dict(color=call_color)
+            ))
+        elif st.session_state.chart_type == 'Area':
+            fig_volume.add_trace(go.Scatter(
+                x=calls_vol_df['strike'],
+                y=calls_vol_df['volume'],
+                mode='lines',
+                fill='tozeroy',
+                name='Call',
+                line=dict(color=call_color, width=0.5),
+                fillcolor=call_color
+            ))
+
+    # Add puts if enabled and data exists
+    if st.session_state.show_puts and not puts_vol_df.empty:
+        if st.session_state.chart_type == 'Bar':
+            fig_volume.add_trace(go.Bar(
+                x=puts_vol_df['strike'],
+                y=puts_vol_df['volume'],
+                name='Put',
+                marker_color=put_color
+            ))
+        elif st.session_state.chart_type == 'Scatter':
+            fig_volume.add_trace(go.Scatter(
+                x=puts_vol_df['strike'],
+                y=puts_vol_df['volume'],
+                mode='markers',
+                name='Put',
+                marker=dict(color=put_color)
+            ))
+        elif st.session_state.chart_type == 'Line':
+            fig_volume.add_trace(go.Scatter(
+                x=puts_vol_df['strike'],
+                y=puts_vol_df['volume'],
+                mode='lines',
+                name='Put',
+                line=dict(color=put_color)
+            ))
+        elif st.session_state.chart_type == 'Area':
+            fig_volume.add_trace(go.Scatter(
+                x=puts_vol_df['strike'],
+                y=puts_vol_df['volume'],
+                mode='lines',
+                fill='tozeroy',
+                name='Put',
+                line=dict(color=put_color, width=0.5),
+                fillcolor=put_color
+            ))
+
+    # Add Net Volume if enabled
+    if st.session_state.show_net and not net_volume.empty:
+        if st.session_state.chart_type == 'Bar':
+            fig_volume.add_trace(go.Bar(
+                x=net_volume.index,
+                y=net_volume.values,
+                name='Net Volume',
+                marker_color=[call_color if val >= 0 else put_color for val in net_volume.values]
+            ))
+        elif st.session_state.chart_type in ['Scatter', 'Line']:
+            positive_mask = net_volume.values >= 0
+            
+            # Plot positive values
+            if any(positive_mask):
+                fig_volume.add_trace(go.Scatter(
+                    x=net_volume.index[positive_mask],
+                    y=net_volume.values[positive_mask],
+                    mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
+                    name='Net Volume (Positive)',
+                    marker=dict(color=call_color) if st.session_state.chart_type == 'Scatter' else None,
+                    line=dict(color=call_color) if st.session_state.chart_type == 'Line' else None
+                ))
+            
+            # Plot negative values
+            if any(~positive_mask):
+                fig_volume.add_trace(go.Scatter(
+                    x=net_volume.index[~positive_mask],
+                    y=net_volume.values[~positive_mask],
+                    mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
+                    name='Net Volume (Negative)',
+                    marker=dict(color=put_color) if st.session_state.chart_type == 'Scatter' else None,
+                    line=dict(color=put_color) if st.session_state.chart_type == 'Line' else None
+                ))
+        elif st.session_state.chart_type == 'Area':
+            positive_mask = net_volume.values >= 0
+            
+            # Plot positive values
+            if any(positive_mask):
+                fig_volume.add_trace(go.Scatter(
+                    x=net_volume.index[positive_mask],
+                    y=net_volume.values[positive_mask],
+                    mode='lines',
+                    fill='tozeroy',
+                    name='Net Volume (Positive)',
+                    line=dict(color=call_color, width=0.5),
+                    fillcolor=call_color
+                ))
+            
+            # Plot negative values
+            if any(~positive_mask):
+                fig_volume.add_trace(go.Scatter(
+                    x=net_volume.index[~positive_mask],
+                    y=net_volume.values[~positive_mask],
+                    mode='lines',
+                    fill='tozeroy',
+                    name='Net Volume (Negative)',
+                    line=dict(color=put_color, width=0.5),
+                    fillcolor=put_color
+                ))
+
     # Calculate y-axis range with improved padding for volume chart
     y_values = []
     for trace in fig_volume.data:
@@ -1064,10 +1331,10 @@ def create_oi_volume_charts(calls, puts, S):
         vol_y_min = 0
         vol_y_max = 100
     
-    # Update Volume chart layout with text size settings and improved y-axis range
+    # Update Volume chart layout
     fig_volume.update_layout(
         title=dict(
-            text='Volume by Strike',
+            text=volume_title_with_totals,
             x=0,
             xanchor='left',
             font=dict(size=st.session_state.chart_text_size + 8)
@@ -1087,36 +1354,21 @@ def create_oi_volume_charts(calls, puts, S):
         xaxis=dict(
             range=[min_strike - padding, max_strike + padding],
             tickmode='linear',
-            dtick=math.ceil(st.session_state.strike_range / 10),
+            dtick=math.ceil(strike_range / 10),
             tickfont=dict(size=st.session_state.chart_text_size)
         ),
         yaxis=dict(
             range=[vol_y_min, vol_y_max],
             tickfont=dict(size=st.session_state.chart_text_size)
         ),
-        height=550  # Increased height for better visibility
+        template="plotly_dark",
+        height=600  # Increased height for better visibility
     )
-    
-    fig_oi.update_xaxes(rangeslider=dict(visible=True))
-    fig_volume.update_xaxes(rangeslider=dict(visible=True))
     
     # Add current price line
     S = round(S, 2)
     fig_oi = add_current_price_line(fig_oi, S)
     fig_volume = add_current_price_line(fig_volume, S)
-    
-    # Apply show/hide settings for calls and puts
-    if not st.session_state.show_calls:
-        fig_oi.for_each_trace(lambda trace: trace.update(visible='legendonly') 
-                             if trace.name == 'Call' else None)
-        fig_volume.for_each_trace(lambda trace: trace.update(visible='legendonly') 
-                                if trace.name == 'Call' else None)
-    
-    if not st.session_state.show_puts:
-        fig_oi.for_each_trace(lambda trace: trace.update(visible='legendonly') 
-                             if trace.name == 'Put' else None)
-        fig_volume.for_each_trace(lambda trace: trace.update(visible='legendonly') 
-                                if trace.name == 'Put' else None)
     
     return fig_oi, fig_volume
 
@@ -1704,7 +1956,7 @@ def chart_settings():
             st.session_state.show_vix_overlay = show_vix
 
         if 'chart_text_size' not in st.session_state:
-            st.session_state.chart_text_size = 12  # Default text size
+            st.session_state.chart_text_size = 15  # Default text size
             
         new_text_size = st.number_input(
             "Chart Text Size",
@@ -1744,17 +1996,19 @@ def chart_settings():
             st.session_state.show_puts = show_puts
             st.session_state.show_net = show_net
 
-        # Initialize strike range in session state
+        # Initialize strike range in session state (as percentage)
         if 'strike_range' not in st.session_state:
-            st.session_state.strike_range = 20.0
+            st.session_state.strike_range = 2.0  # Default 2%
         
-        # Add strike range control
+        # Add strike range control (as percentage)
         st.session_state.strike_range = st.number_input(
-            "Strike Range (±)",
-            min_value=1.0,
-            max_value=2000.0,
+            "Strike Range (% from current price)",
+            min_value=0.1,
+            max_value=50.0,
             value=st.session_state.strike_range,
-            step=1.0,
+            step=0.1,
+            format="%.1f",
+            help="Percentage range from current price (e.g., 1.0 = ±1%)",
             key="strike_range_sidebar"
         )
 
@@ -1784,6 +2038,24 @@ def chart_settings():
         # Update session state when GEX type changes
         if gex_type != st.session_state.gex_type:
             st.session_state.gex_type = gex_type
+
+        # Add intraday chart level settings
+        st.write("Intraday Chart Levels:")
+        
+        # Initialize GEX and DEX level settings if not already set
+        if 'show_gex_levels' not in st.session_state:
+            st.session_state.show_gex_levels = True  # Default to showing GEX levels
+        if 'show_dex_levels' not in st.session_state:
+            st.session_state.show_dex_levels = False  # Default to not showing DEX levels
+        
+        # GEX and DEX level toggles
+        show_gex_levels = st.checkbox("Show GEX Levels", value=st.session_state.show_gex_levels)
+        show_dex_levels = st.checkbox("Show DEX Levels", value=st.session_state.show_dex_levels)
+        
+        # Update session state when level visibility changes
+        if show_gex_levels != st.session_state.show_gex_levels or show_dex_levels != st.session_state.show_dex_levels:
+            st.session_state.show_gex_levels = show_gex_levels
+            st.session_state.show_dex_levels = show_dex_levels
 
         # Add refresh rate control before chart type
         if 'refresh_rate' not in st.session_state:
@@ -1946,9 +2218,10 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     puts_df = puts_df[puts_df[exposure_type] != 0]
     puts_df['OptionType'] = 'Put'
 
-    # Calculate strike range around current price
-    min_strike = S - st.session_state.strike_range
-    max_strike = S + st.session_state.strike_range
+    # Calculate strike range around current price (percentage-based)
+    strike_range = calculate_strike_range(S)
+    min_strike = S - strike_range
+    max_strike = S + strike_range
     
     # Apply strike range filter
     calls_df = calls_df[(calls_df['strike'] >= min_strike) & (calls_df['strike'] <= max_strike)]
@@ -2145,7 +2418,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
         y_max = 1
 
     # Update layout with calculated y-range
-    padding = st.session_state.strike_range * 0.1
+    padding = strike_range * 0.1
     fig.update_layout(
         title=dict(
             text=title_with_totals,
@@ -2170,7 +2443,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
         xaxis=dict(
             range=[min_strike - padding, max_strike + padding],
             tickmode='linear',
-            dtick=math.ceil(st.session_state.strike_range / 10),
+            dtick=math.ceil(strike_range / 10),
             tickfont=dict(size=st.session_state.chart_text_size)
         ),
         yaxis=dict(
@@ -2229,10 +2502,11 @@ def create_max_pain_chart(calls, puts, S):
     call_color = st.session_state.call_color
     put_color = st.session_state.put_color
 
-    # Calculate strike range around current price
-    min_strike = S - st.session_state.strike_range
-    max_strike = S + st.session_state.strike_range
-    padding = st.session_state.strike_range * 0.1
+    # Calculate strike range around current price (percentage-based)
+    strike_range = calculate_strike_range(S)
+    min_strike = S - strike_range
+    max_strike = S + strike_range
+    padding = strike_range * 0.1
     
     fig = go.Figure()
 
@@ -2369,7 +2643,7 @@ def create_max_pain_chart(calls, puts, S):
         xaxis=dict(
             range=[min_strike - padding, max_strike + padding],
             tickmode='linear',
-            dtick=math.ceil(st.session_state.strike_range / 10),
+            dtick=math.ceil(strike_range / 10),
             tickfont=dict(size=st.session_state.chart_text_size)
         ),
         yaxis=dict(
@@ -2448,9 +2722,10 @@ def create_davi_chart(calls, puts, S):
     puts_df = puts_df[puts_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     puts_df['OptionType'] = 'Put'
 
-    # Calculate strike range around current price
-    min_strike = S - st.session_state.strike_range
-    max_strike = S + st.session_state.strike_range
+    # Calculate strike range around current price (percentage-based)
+    strike_range = calculate_strike_range(S)
+    min_strike = S - strike_range
+    max_strike = S + strike_range
     
     # Filter data based on strike range
     calls_df = calls_df[(calls_df['strike'] >= min_strike) & (calls_df['strike'] <= max_strike)]
@@ -2600,7 +2875,7 @@ def create_davi_chart(calls, puts, S):
     fig = add_current_price_line(fig, S)
 
     # Update layout
-    padding = st.session_state.strike_range * 0.1
+    padding = strike_range * 0.1
     fig.update_layout(
         title=dict(
             text=title_with_totals,
@@ -2624,7 +2899,7 @@ def create_davi_chart(calls, puts, S):
         xaxis=dict(
             range=[min_strike - padding, max_strike + padding],
             tickmode='linear',
-            dtick=math.ceil(st.session_state.strike_range / 10),
+            dtick=math.ceil(strike_range / 10),
             tickfont=dict(size=st.session_state.chart_text_size)
         ),
         yaxis=dict(
@@ -3767,7 +4042,7 @@ if st.session_state.current_page == "Dashboard":
                                     text=f"{vix_data['Close'].iloc[-1]:.2f}",
                                     showarrow=False,
                                     xshift=16,
-                                    font=dict(color=st.session_state.vix_color, size=15)
+                                    font=dict(color=st.session_state.vix_color, size=st.session_state.chart_text_size)
                                 )
 
                                 # Adjust y-axis to include VIX
@@ -3787,66 +4062,132 @@ if st.session_state.current_page == "Dashboard":
                                 xshift=27,
                                 showarrow=False,
                                 text=f"{current_price:,.2f}",
-                                font=dict(color='yellow', size=15)
+                                font=dict(color='yellow', size=st.session_state.chart_text_size)
                             )
                             y_min = min(y_min, current_price - padding)
                             y_max = max(y_max, current_price + padding)
 
-                        # Process options data (GEX levels)
+                        # Process options data (GEX and DEX levels)
                         calls['OptionType'] = 'Call'
                         puts['OptionType'] = 'Put'
-                        options_df = pd.concat([calls, puts]).dropna(subset=['GEX'])
                         added_strikes = set()
 
-                        if not options_df.empty:
-                            top5 = options_df.nlargest(5, 'GEX')[['strike', 'GEX', 'OptionType']]
-                            top5['distance'] = abs(top5['strike'] - current_price)
-                            nearest_3 = top5.nsmallest(3, 'distance')
-                            max_gex = abs(top5['GEX']).max()
+                        # Add GEX levels if enabled
+                        if st.session_state.show_gex_levels:
+                            options_df = pd.concat([calls, puts]).dropna(subset=['GEX'])
+                            
+                            if not options_df.empty:
+                                top5_gex = options_df.nlargest(5, 'GEX')[['strike', 'GEX', 'OptionType']]
+                                top5_gex['distance'] = abs(top5_gex['strike'] - current_price)
+                                nearest_3_gex = top5_gex.nsmallest(3, 'distance')
+                                max_gex = abs(top5_gex['GEX']).max()
 
-                            for row in top5.itertuples():
-                                if row.strike not in added_strikes and not pd.isna(row.GEX) and row.GEX != 0:
-                                    # Calculate intensity based on GEX value relative to max
-                                    intensity = max(0.6, min(1.0, abs(row.GEX) / max_gex))  # Changed minimum from 0.3 to 0.6
-                                    
-                                    # Get base color from session state
-                                    base_color = st.session_state.call_color if row.OptionType == 'Call' else st.session_state.put_color
-                                    
-                                    # Convert hex to RGB
-                                    rgb = tuple(int(base_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-                                    
-                                    # Create color with intensity
-                                    color = f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {intensity})'
-                                    
-                                    fig_intraday.add_shape(
-                                        type='line',
-                                        x0=intraday_data.index[0],
-                                        x1=intraday_data.index[-1],
-                                        y0=row.strike,
-                                        y1=row.strike,
-                                        line=dict(
-                                            color=color,
-                                            width=2
-                                        ),
-                                        xref='x',
-                                        yref='y',
-                                        layer='below'
-                                    )
-                                    
-                                    # Add text annotation with matching opacity
-                                    fig_intraday.add_annotation(
-                                        x=intraday_data.index[-1],
-                                        y=row.strike,
-                                        text=f"GEX {row.GEX:,.0f}",
-                                        font=dict(color=color),
-                                        showarrow=True,
-                                        arrowcolor=color
-                                    )
-                                    added_strikes.add(row.strike)
+                                for row in top5_gex.itertuples():
+                                    if row.strike not in added_strikes and not pd.isna(row.GEX) and row.GEX != 0:
+                                        # Calculate intensity based on GEX value relative to max
+                                        intensity = max(0.6, min(1.0, abs(row.GEX) / max_gex))  # Changed minimum from 0.3 to 0.6
+                                        
+                                        # Get base color from session state
+                                        base_color = st.session_state.call_color if row.OptionType == 'Call' else st.session_state.put_color
+                                        
+                                        # Convert hex to RGB
+                                        rgb = tuple(int(base_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+                                        
+                                        # Create color with intensity
+                                        color = f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {intensity})'
+                                        
+                                        fig_intraday.add_shape(
+                                            type='line',
+                                            x0=intraday_data.index[0],
+                                            x1=intraday_data.index[-1],
+                                            y0=row.strike,
+                                            y1=row.strike,
+                                            line=dict(
+                                                color=color,
+                                                width=2
+                                            ),
+                                            xref='x',
+                                            yref='y',
+                                            layer='below'
+                                        )
+                                        
+                                        # Add text annotation positioned to the right of the chart
+                                        fig_intraday.add_annotation(
+                                            x=0.92,
+                                            y=row.strike,
+                                            text=f"GEX {row.GEX:,.0f}",
+                                            font=dict(color=color, size=st.session_state.chart_text_size - 2),
+                                            showarrow=False,
+                                            xref="paper",  # Use paper coordinates for x
+                                            yref="y",      # Use data coordinates for y
+                                            xanchor="left"
+                                        )
+                                        added_strikes.add(row.strike)
 
-                            # Include GEX strikes in y-axis range
-                            y_min = min(y_min, nearest_3['strike'].min() - padding)
-                            y_max = max(y_max, nearest_3['strike'].max() + padding)
+                                # Include GEX strikes in y-axis range
+                                y_min = min(y_min, nearest_3_gex['strike'].min() - padding)
+                                y_max = max(y_max, nearest_3_gex['strike'].max() + padding)
+
+                        # Add DEX levels if enabled
+                        if st.session_state.show_dex_levels:
+                            # Create combined DEX dataframe with absolute values for ranking
+                            dex_options_df = pd.concat([calls, puts]).dropna(subset=['DEX'])
+                            
+                            if not dex_options_df.empty:
+                                # Use absolute DEX values for ranking (similar to GEX logic)
+                                dex_options_df['abs_DEX'] = abs(dex_options_df['DEX'])
+                                top5_dex = dex_options_df.nlargest(5, 'abs_DEX')[['strike', 'DEX', 'OptionType']]
+                                top5_dex['distance'] = abs(top5_dex['strike'] - current_price)
+                                nearest_3_dex = top5_dex.nsmallest(3, 'distance')
+                                max_dex = abs(top5_dex['DEX']).max()
+
+                                for row in top5_dex.itertuples():
+                                    if row.strike not in added_strikes and not pd.isna(row.DEX) and row.DEX != 0:
+                                        # Calculate intensity based on DEX value relative to max
+                                        intensity = max(0.6, min(1.0, abs(row.DEX) / max_dex))
+                                        
+                                        # Get base color from session state - use different style for DEX
+                                        base_color = st.session_state.call_color if row.OptionType == 'Call' else st.session_state.put_color
+                                        
+                                        # Convert hex to RGB
+                                        rgb = tuple(int(base_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+                                        
+                                        # Create color with intensity
+                                        color = f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {intensity})'
+                                        
+                                        # Add dashed line for DEX levels to distinguish from GEX
+                                        fig_intraday.add_shape(
+                                            type='line',
+                                            x0=intraday_data.index[0],
+                                            x1=intraday_data.index[-1],
+                                            y0=row.strike,
+                                            y1=row.strike,
+                                            line=dict(
+                                                color=color,
+                                                width=2,
+                                                dash='dash'  # Dashed line to distinguish from GEX
+                                            ),
+                                            xref='x',
+                                            yref='y',
+                                            layer='below'
+                                        )
+                                        
+                                        # Add text annotation positioned to the right of the chart
+                                        fig_intraday.add_annotation(
+                                            x=0.92,
+                                            y=row.strike,
+                                            text=f"DEX {row.DEX:,.0f}",
+                                            font=dict(color=color, size=st.session_state.chart_text_size - 2),
+                                            showarrow=False,
+                                            xref="paper",  # Use paper coordinates for x
+                                            yref="y",      # Use data coordinates for y
+                                            xanchor="left"
+                                        )
+                                        added_strikes.add(row.strike)
+
+                                # Include DEX strikes in y-axis range
+                                y_min = min(y_min, nearest_3_dex['strike'].min() - padding)
+                                y_max = max(y_max, nearest_3_dex['strike'].max() + padding)
 
                         # Ensure minimum range
                         if abs(y_max - y_min) < (current_price * 0.01):  # Minimum 1% range
@@ -3856,17 +4197,24 @@ if st.session_state.current_page == "Dashboard":
 
                         # Update layout
                         fig_intraday.update_layout(
-                            title=f"Intraday Price for {ticker}",
+                            title=dict(
+                                text=f"Intraday Price for {ticker}",
+                                font=dict(size=st.session_state.chart_text_size + 4)
+                            ),
                             height=600,
                             hovermode='x unified',
                             margin=dict(r=150, l=50),
-                            xaxis=dict(autorange=True, rangeslider=dict(visible=False)),
+                            xaxis=dict(
+                                autorange=True, 
+                                rangeslider=dict(visible=False),
+                                tickfont=dict(size=st.session_state.chart_text_size)
+                            ),
                             yaxis=dict(
-                                range=[y_min, y_max],
-                                autorange=False,
+                                autorange=True,
                                 fixedrange=False,
                                 showgrid=True,
-                                zeroline=False
+                                zeroline=False,
+                                tickfont=dict(size=st.session_state.chart_text_size)
                             ),
                             showlegend=False  # Remove legend
                         )
@@ -4134,8 +4482,8 @@ if st.session_state.get('current_page') == "IV Surface":
                 with st.spinner('Fetching options data...'):
                     all_data = []  # Store all IV data
 
-                    # Calculate strike range using strike_range setting
-                    strike_range = st.session_state.strike_range
+                    # Calculate strike range using percentage-based setting
+                    strike_range = calculate_strike_range(S)
                     min_strike = S - strike_range
                     max_strike = S + strike_range
 
@@ -4347,8 +4695,8 @@ elif st.session_state.get('current_page') == "GEX Surface":
                 with st.spinner('Fetching options data...'):
                     all_data = []  # Store all computed GEX data
 
-                    # Calculate strike range using strike_range setting
-                    strike_range = st.session_state.strike_range
+                    # Calculate strike range using percentage-based setting
+                    strike_range = calculate_strike_range(S)
                     min_strike = S - strike_range
                     max_strike = S + strike_range
 
