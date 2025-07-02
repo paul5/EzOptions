@@ -1489,6 +1489,277 @@ def create_oi_volume_charts(calls, puts, S):
     
     return fig_oi, fig_volume
 
+def create_volume_by_strike_chart(calls, puts, S):
+    """Create a standalone volume by strike chart for the dashboard."""
+    if S is None:
+        st.error("Could not fetch underlying price.")
+        return None
+
+    # Get colors from session state at the start
+    call_color = st.session_state.call_color
+    put_color = st.session_state.put_color
+
+    # Calculate strike range around current price (percentage-based)
+    strike_range = calculate_strike_range(S)
+    min_strike = S - strike_range
+    max_strike = S + strike_range
+    
+    # Filter data based on strike range
+    calls_filtered = calls[(calls['strike'] >= min_strike) & (calls['strike'] <= max_strike)]
+    puts_filtered = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
+    
+    # Create separate dataframes for Volume, filtering out zeros
+    calls_vol_df = calls_filtered[['strike', 'volume']].copy()
+    calls_vol_df = calls_vol_df[calls_vol_df['volume'] > 0]
+    calls_vol_df['OptionType'] = 'Call'
+    
+    puts_vol_df = puts_filtered[['strike', 'volume']].copy()
+    puts_vol_df = puts_vol_df[puts_vol_df['volume'] > 0]
+    puts_vol_df['OptionType'] = 'Put'
+    
+    # Calculate Net Volume using filtered data
+    net_volume = calls_filtered.groupby('strike')['volume'].sum() - puts_filtered.groupby('strike')['volume'].sum()
+    
+    # Calculate total values for title (handle empty dataframes)
+    total_call_volume = calls_vol_df['volume'].sum() if not calls_vol_df.empty else 0
+    total_put_volume = puts_vol_df['volume'].sum() if not puts_vol_df.empty else 0
+    
+    # Create title with totals using HTML for colored values
+    volume_title_with_totals = (
+        f"Volume by Strike     "
+        f"<span style='color: {call_color}'>{total_call_volume:,.0f}</span> | "
+        f"<span style='color: {put_color}'>{total_put_volume:,.0f}</span>"
+    )
+    
+    # Create Volume Chart
+    fig_volume = go.Figure()
+    
+    # Add calls if enabled and data exists
+    if st.session_state.show_calls and not calls_vol_df.empty:
+        if st.session_state.chart_type == 'Bar':
+            fig_volume.add_trace(go.Bar(
+                x=calls_vol_df['strike'],
+                y=calls_vol_df['volume'],
+                name='Call',
+                marker_color=call_color
+            ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig_volume.add_trace(go.Bar(
+                y=calls_vol_df['strike'],
+                x=calls_vol_df['volume'],
+                name='Call',
+                marker_color=call_color,
+                orientation='h'
+            ))
+        elif st.session_state.chart_type == 'Scatter':
+            fig_volume.add_trace(go.Scatter(
+                x=calls_vol_df['strike'],
+                y=calls_vol_df['volume'],
+                mode='markers',
+                name='Call',
+                marker=dict(color=call_color)
+            ))
+        elif st.session_state.chart_type == 'Line':
+            fig_volume.add_trace(go.Scatter(
+                x=calls_vol_df['strike'],
+                y=calls_vol_df['volume'],
+                mode='lines',
+                name='Call',
+                line=dict(color=call_color)
+            ))
+        elif st.session_state.chart_type == 'Area':
+            fig_volume.add_trace(go.Scatter(
+                x=calls_vol_df['strike'],
+                y=calls_vol_df['volume'],
+                mode='lines',
+                fill='tozeroy',
+                name='Call',
+                line=dict(color=call_color, width=0.5),
+                fillcolor=call_color
+            ))
+
+    # Add puts if enabled and data exists
+    if st.session_state.show_puts and not puts_vol_df.empty:
+        if st.session_state.chart_type == 'Bar':
+            fig_volume.add_trace(go.Bar(
+                x=puts_vol_df['strike'],
+                y=puts_vol_df['volume'],
+                name='Put',
+                marker_color=put_color
+            ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig_volume.add_trace(go.Bar(
+                y=puts_vol_df['strike'],
+                x=puts_vol_df['volume'],
+                name='Put',
+                marker_color=put_color,
+                orientation='h'
+            ))
+        elif st.session_state.chart_type == 'Scatter':
+            fig_volume.add_trace(go.Scatter(
+                x=puts_vol_df['strike'],
+                y=puts_vol_df['volume'],
+                mode='markers',
+                name='Put',
+                marker=dict(color=put_color)
+            ))
+        elif st.session_state.chart_type == 'Line':
+            fig_volume.add_trace(go.Scatter(
+                x=puts_vol_df['strike'],
+                y=puts_vol_df['volume'],
+                mode='lines',
+                name='Put',
+                line=dict(color=put_color)
+            ))
+        elif st.session_state.chart_type == 'Area':
+            fig_volume.add_trace(go.Scatter(
+                x=puts_vol_df['strike'],
+                y=puts_vol_df['volume'],
+                mode='lines',
+                fill='tozeroy',
+                name='Put',
+                line=dict(color=put_color, width=0.5),
+                fillcolor=put_color
+            ))
+
+    # Add Net Volume if enabled
+    if st.session_state.show_net and not net_volume.empty:
+        if st.session_state.chart_type == 'Bar':
+            fig_volume.add_trace(go.Bar(
+                x=net_volume.index,
+                y=net_volume.values,
+                name='Net Volume',
+                marker_color=[call_color if val >= 0 else put_color for val in net_volume.values]
+            ))
+        elif st.session_state.chart_type == 'Horizontal Bar':
+            fig_volume.add_trace(go.Bar(
+                y=net_volume.index,
+                x=net_volume.values,
+                name='Net Volume',
+                marker_color=[call_color if val >= 0 else put_color for val in net_volume.values],
+                orientation='h'
+            ))
+        elif st.session_state.chart_type in ['Scatter', 'Line']:
+            positive_mask = net_volume.values >= 0
+            
+            # Plot positive values
+            if any(positive_mask):
+                fig_volume.add_trace(go.Scatter(
+                    x=net_volume.index[positive_mask],
+                    y=net_volume.values[positive_mask],
+                    mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
+                    name='Net Volume (Positive)',
+                    marker=dict(color=call_color) if st.session_state.chart_type == 'Scatter' else None,
+                    line=dict(color=call_color) if st.session_state.chart_type == 'Line' else None
+                ))
+            
+            # Plot negative values
+            if any(~positive_mask):
+                fig_volume.add_trace(go.Scatter(
+                    x=net_volume.index[~positive_mask],
+                    y=net_volume.values[~positive_mask],
+                    mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
+                    name='Net Volume (Negative)',
+                    marker=dict(color=put_color) if st.session_state.chart_type == 'Scatter' else None,
+                    line=dict(color=put_color) if st.session_state.chart_type == 'Line' else None
+                ))
+        elif st.session_state.chart_type == 'Area':
+            positive_mask = net_volume.values >= 0
+            
+            # Plot positive values
+            if any(positive_mask):
+                fig_volume.add_trace(go.Scatter(
+                    x=net_volume.index[positive_mask],
+                    y=net_volume.values[positive_mask],
+                    mode='lines',
+                    fill='tozeroy',
+                    name='Net Volume (Positive)',
+                    line=dict(color=call_color, width=0.5),
+                    fillcolor=call_color
+                ))
+            
+            # Plot negative values
+            if any(~positive_mask):
+                fig_volume.add_trace(go.Scatter(
+                    x=net_volume.index[~positive_mask],
+                    y=net_volume.values[~positive_mask],
+                    mode='lines',
+                    fill='tozeroy',
+                    name='Net Volume (Negative)',
+                    line=dict(color=put_color, width=0.5),
+                    fillcolor=put_color
+                ))
+
+    # Update Volume chart layout
+    if st.session_state.chart_type == 'Horizontal Bar':
+        fig_volume.update_layout(
+            title=dict(
+                text=volume_title_with_totals,
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)
+            ),
+            xaxis_title=dict(
+                text='Volume',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis_title=dict(
+                text='Strike Price',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            legend=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            hovermode='y unified',
+            xaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            template="plotly_dark",
+            height=600
+        )
+    else:
+        fig_volume.update_layout(
+            title=dict(
+                text=volume_title_with_totals,
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)
+            ),
+            xaxis_title=dict(
+                text='Strike Price',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis_title=dict(
+                text='Volume',
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            legend=dict(
+                font=dict(size=st.session_state.chart_text_size)
+            ),
+            hovermode='x unified',
+            xaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            yaxis=dict(
+                autorange=True,
+                tickfont=dict(size=st.session_state.chart_text_size)
+            ),
+            template="plotly_dark",
+            height=600
+        )
+    
+    # Add current price line
+    S = round(S, 2)
+    fig_volume = add_current_price_line(fig_volume, S)
+    
+    return fig_volume
+
 def create_donut_chart(call_volume, put_volume):
     labels = ['Calls', 'Puts']
     values = [call_volume, put_volume]
@@ -4501,7 +4772,7 @@ if st.session_state.current_page == "Dashboard":
                     chart_options = [
                         "Intraday Price", "Gamma Exposure", "Vanna Exposure", "Delta Exposure",
                         "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Volume Ratio",
-                        "Max Pain", "Delta-Adjusted Value Index"
+                        "Max Pain", "Delta-Adjusted Value Index", "Volume by Strike"
                     ]
                     default_charts = ["Intraday Price", "Gamma Exposure", "Vanna Exposure", "Delta Exposure", "Charm Exposure"]
                     selected_charts = st.multiselect("Select charts to display:", chart_options, default=[
@@ -4614,7 +4885,8 @@ if st.session_state.current_page == "Dashboard":
                         ("Vanna Exposure", fig_vanna), ("Charm Exposure", fig_charm),
                         ("Speed Exposure", fig_speed), ("Vomma Exposure", fig_vomma),
                         ("Volume Ratio", fig_volume_ratio), ("Max Pain", fig_max_pain),
-                        ("Delta-Adjusted Value Index", create_davi_chart(calls, puts, S))
+                        ("Delta-Adjusted Value Index", create_davi_chart(calls, puts, S)),
+                        ("Volume by Strike", create_volume_by_strike_chart(calls, puts, S))
                     ]:
                         if chart in selected_charts:
                             supplemental_charts.append(fig)
