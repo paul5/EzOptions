@@ -2818,16 +2818,41 @@ def download_volume_csv(symbol=None, symbol_type="U", expiry_date=None):
     except requests.exceptions.RequestException as e:
         return None, f"Error during request: {e}"
 
-st.sidebar.title("Navigation")
+st.sidebar.title("📊 Navigation")
+
+# Define pages with their corresponding icons
+page_icons = {
+    "Dashboard": "🏠",
+    "OI & Volume": "📈", 
+    "Gamma Exposure": "🔺",
+    "Delta Exposure": "📊",
+    "Vanna Exposure": "🌊",
+    "Charm Exposure": "⚡",
+    "Speed Exposure": "🚀",
+    "Vomma Exposure": "💫",
+    "Delta-Adjusted Value Index": "📉",
+    "Max Pain": "🎯",
+    "GEX Surface": "🗻",
+    "IV Surface": "🌐",
+    "Analysis": "🔍",
+    "Calculated Greeks": "🧮"
+}
+
 pages = ["Dashboard", "OI & Volume", "Gamma Exposure", "Delta Exposure", 
           "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Delta-Adjusted Value Index", "Max Pain", "GEX Surface", "IV Surface",
           "Analysis", "Calculated Greeks"]
+
+# Create page options with icons
+page_options = [f"{page_icons[page]} {page}" for page in pages]
 
 # Track the previous page in session state
 if 'previous_page' not in st.session_state:
     st.session_state.previous_page = None
 
-new_page = st.sidebar.radio("Select a page:", pages)
+selected_page_with_icon = st.sidebar.radio("Select a page:", page_options)
+
+# Extract the actual page name (remove icon and space)
+new_page = selected_page_with_icon.split(" ", 1)[1]
 
 # Check if the page has changed
 if st.session_state.previous_page != new_page:
