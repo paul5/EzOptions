@@ -16,6 +16,8 @@ from scipy.interpolate import griddata
 import numpy as np
 import pytz
 from datetime import timedelta
+import requests
+import json
 
 
 def calculate_heikin_ashi(df):
@@ -2263,6 +2265,325 @@ def handle_page_change(new_page):
 def save_ticker(ticker):
     st.session_state.saved_ticker = ticker
 
+# Market Maker Functions
+def get_latest_business_day():
+    """Get the latest business day (Monday-Friday) from 24 hours ago."""
+    now = datetime.now()
+    twenty_four_hours_ago = now - timedelta(hours=24)
+    
+    # Start with the date from 24 hours ago
+    target_date = twenty_four_hours_ago
+    
+    # If the date from 24 hours ago is a weekend, find the most recent weekday
+    while target_date.weekday() > 4:  # Saturday=5, Sunday=6
+        target_date -= timedelta(days=1)
+    
+    # Always return a business day, even if it's more than 24 hours ago
+    # This ensures we get market maker data for the most recent trading day
+    return target_date
+
+def should_run_script():
+    """Check if script should run (based on whether there's a trading day within 24 hours)."""
+    # The script should run if there's a valid trading day within the last 24 hours
+    # This will be determined by get_latest_business_day(), so we'll let it run
+    # and let that function determine if there's valid data to fetch
+    return True
+
+def get_params_for_date(target_date, symbol=None, symbol_type="U"):
+    """Get API parameters for a specific date and optional symbol."""
+    # Safety check: ensure we never request future dates
+    today = datetime.now().date()
+    if target_date.date() > today:
+        target_date = datetime.now() - timedelta(days=1)  # Use yesterday instead
+        while target_date.weekday() > 4:  # Skip weekends
+            target_date -= timedelta(days=1)
+    
+    params = {
+        "format": "csv",
+        "volumeQueryType": "O",  # Options
+        "symbolType": "ALL" if symbol is None else symbol_type,  # ALL for all symbols, O/U for specific
+        "reportType": "D",       # Daily report (can be modified to W or M)
+        "accountType": "M",      # Market Maker
+        "productKind": "ALL",    # All product types (Equity, Index, etc.)
+        "porc": "BOTH",          # Calls and Puts
+        "reportDate": target_date.strftime("%Y%m%d")  # Date in YYYYMMDD format
+    }
+    
+    # If a specific symbol is provided, add it as a filter parameter
+    if symbol:
+        params["symbol"] = symbol.upper()
+    
+    return params
+
+def process_market_maker_data(csv_data):
+    """Process market maker CSV data and return summary statistics"""
+    try:
+        from io import StringIO
+        
+        # Skip any header lines that are not part of the CSV data
+        lines = csv_data.strip().split('\n')
+        
+        # Find the first line that looks like CSV data (has commas and starts with a number)
+        start_index = 0
+        for i, line in enumerate(lines):
+            if ',' in line and line.strip() and line.strip()[0].isdigit():
+                start_index = i
+                break
+        
+        # Reconstruct CSV data from the actual data lines
+        csv_lines = lines[start_index:]
+        clean_csv = '\n'.join(csv_lines)
+        
+        # Read CSV with proper column names based on OCC layout
+        df = pd.read_csv(StringIO(clean_csv), header=None, names=[
+            'Quantity',           # Column 1: Volume
+            'Underlying_Symbol',  # Column 2: Underlying symbol  
+            'Options_Symbol',     # Column 3: Options symbol
+            'Account_Type',       # Column 4: Account type (C/F/M)
+            'Call_Put_Indicator', # Column 5: Call/Put indicator (C/P)
+            'Exchange',           # Column 6: Exchange
+            'Activity_Date',      # Column 7: Activity date
+            'Series_Date'         # Column 8: Series/contract date
+        ])
+        
+        if df.empty:
+            return None
+        
+        # Initialize summary data
+        summary = {
+            'total_volume': 0,
+            'call_volume': 0,
+            'put_volume': 0,
+            'call_percentage': 0,
+            'put_percentage': 0,
+            'raw_data': df
+        }
+        
+        # Filter for Market Maker data only
+        mm_data = df[df['Account_Type'] == 'M']
+        
+        if mm_data.empty:
+            # If no MM data, use all data
+            mm_data = df
+        
+        # Calculate call and put volumes using the Call_Put_Indicator column
+        call_data = mm_data[mm_data['Call_Put_Indicator'] == 'C']
+        put_data = mm_data[mm_data['Call_Put_Indicator'] == 'P']
+        
+        summary['call_volume'] = call_data['Quantity'].sum() if not call_data.empty else 0
+        summary['put_volume'] = put_data['Quantity'].sum() if not put_data.empty else 0
+        summary['total_volume'] = summary['call_volume'] + summary['put_volume']
+        
+        if summary['total_volume'] > 0:
+            summary['call_percentage'] = (summary['call_volume'] / summary['total_volume']) * 100
+            summary['put_percentage'] = (summary['put_volume'] / summary['total_volume']) * 100
+        
+
+        
+        return summary
+        
+    except Exception as e:
+        # Fallback to original logic if the structured approach fails
+        try:
+            df = pd.read_csv(StringIO(csv_data))
+            if df.empty:
+                return None
+                
+            summary = {
+                'total_volume': 0,
+                'call_volume': 0,
+                'put_volume': 0,
+                'call_percentage': 0,
+                'put_percentage': 0,
+                'raw_data': df
+            }
+            
+            # Try to find volume column
+            volume_col = None
+            for col in df.columns:
+                if any(term in col.lower() for term in ['quantity', 'volume', 'vol']):
+                    volume_col = col
+                    break
+            
+            if volume_col is None and len(df.select_dtypes(include=[np.number]).columns) > 0:
+                volume_col = df.select_dtypes(include=[np.number]).columns[0]
+            
+            if volume_col:
+                # Try to find call/put indicator column
+                cp_col = None
+                for col in df.columns:
+                    if df[col].dtype == 'object':
+                        unique_vals = df[col].unique()
+                        if any('C' in str(unique_vals)) and any('P' in str(unique_vals)):
+                            cp_col = col
+                            break
+                
+                if cp_col:
+                    call_data = df[df[cp_col] == 'C']
+                    put_data = df[df[cp_col] == 'P']
+                    
+                    summary['call_volume'] = call_data[volume_col].sum() if not call_data.empty else 0
+                    summary['put_volume'] = put_data[volume_col].sum() if not put_data.empty else 0
+                    summary['total_volume'] = summary['call_volume'] + summary['put_volume']
+                    
+                    if summary['total_volume'] > 0:
+                        summary['call_percentage'] = (summary['call_volume'] / summary['total_volume']) * 100
+                        summary['put_percentage'] = (summary['put_volume'] / summary['total_volume']) * 100
+            
+            return summary
+            
+        except Exception:
+            return None
+
+def create_market_maker_charts(summary_data):
+    """Create charts for market maker data visualization"""
+    call_color = st.session_state.call_color
+    put_color = st.session_state.put_color
+    
+    # Ensure we have valid data for charts
+    call_vol = max(summary_data['call_volume'], 0)
+    put_vol = max(summary_data['put_volume'], 0)
+    
+    # If both volumes are zero, create placeholder charts
+    if call_vol == 0 and put_vol == 0:
+        call_vol, put_vol = 1, 1  # Equal placeholder values
+    
+    # Call/Put Volume Pie Chart
+    fig_pie = go.Figure(data=[go.Pie(
+        labels=['Calls', 'Puts'],
+        values=[call_vol, put_vol],
+        marker_colors=[call_color, put_color],
+        hole=0.4,
+        textinfo='label+percent+value',
+        textfont_size=14
+    )])
+    
+    fig_pie.update_layout(
+        title=dict(
+            text="Market Maker Call/Put Volume Distribution",
+            x=0.5,
+            xanchor='center',
+            font=dict(size=18)
+        ),
+        template="plotly_dark",
+        height=500,  # Increased height for bigger chart
+        showlegend=False,  # Remove legend
+        margin=dict(t=80, b=80, l=80, r=80)  # Add margins for better spacing
+    )
+    
+    # Volume Bar Chart
+    fig_bar = go.Figure()
+    
+    fig_bar.add_trace(go.Bar(
+        x=['Calls', 'Puts'],
+        y=[call_vol, put_vol],
+        marker_color=[call_color, put_color],
+        text=[f"{summary_data['call_volume']:,}", f"{summary_data['put_volume']:,}"],
+        textposition='auto',
+        name='Volume'
+    ))
+    
+    fig_bar.update_layout(
+        title=dict(
+            text="Market Maker Volume Breakdown",
+            x=0.5,
+            xanchor='center',
+            font=dict(size=18)
+        ),
+        xaxis_title=dict(
+            text="Option Type",
+            font=dict(size=14)
+        ),
+        yaxis_title=dict(
+            text="Volume",
+            font=dict(size=14)
+        ),
+        template="plotly_dark",
+        height=500,  # Increased height for bigger chart
+        showlegend=False,
+        margin=dict(t=80, b=80, l=80, r=80)  # Add margins for better spacing
+    )
+    
+    return fig_pie, fig_bar
+
+def download_volume_csv(symbol=None, symbol_type="U", expiry_date=None):
+    """Download market maker volume data from OCC API"""
+    BASE_URL = "https://marketdata.theocc.com/volume-query"
+    HEADERS = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+    }
+    
+    # Check if we should run the script
+    if not should_run_script():
+        return None, "Script is currently disabled."
+    
+    # Clean symbol for OCC API (remove ^ prefix from index symbols)
+    clean_symbol = symbol
+    if symbol and symbol.startswith('^'):
+        clean_symbol = symbol[1:]  # Remove the ^ prefix
+    
+    # The API report date should be from the latest business day from 24 hours ago
+    api_report_date = get_latest_business_day()
+    
+    # If expiry_date is provided, use it for display purposes
+    # The actual API still uses the api_report_date for the reportDate parameter
+    display_date = expiry_date if expiry_date else api_report_date
+    
+    params = get_params_for_date(api_report_date, clean_symbol, symbol_type)
+    
+    try:
+        # Make the GET request to the OCC volume query endpoint
+        response = requests.get(BASE_URL, params=params, headers=HEADERS)
+        
+        # Check if the request was successful
+        if response.status_code == 200:
+            if expiry_date:
+                # Convert expiry_date string to datetime for formatting
+                try:
+                    if isinstance(expiry_date, str):
+                        expiry_dt = datetime.strptime(expiry_date, '%Y-%m-%d')
+                        display_text = f"Market Maker Positioning Data Retrieved Successfully for expiry: {expiry_dt.strftime('%Y-%m-%d (%A)')} (API report date: {api_report_date.strftime('%Y-%m-%d')})"
+                    else:
+                        display_text = f"Market Maker Positioning Data Retrieved Successfully for expiry: {expiry_date.strftime('%Y-%m-%d (%A)')} (API report date: {api_report_date.strftime('%Y-%m-%d')})"
+                except:
+                    display_text = f"Market Maker Positioning Data Retrieved Successfully for expiry: {expiry_date} (API report date: {api_report_date.strftime('%Y-%m-%d')})"
+            else:
+                display_text = f"Market Maker Positioning Data Retrieved Successfully for {api_report_date.strftime('%Y-%m-%d (%A)')}"
+            return response.text, display_text
+        else:
+            # Try previous business days (up to 5 days back)
+            for days_back in range(1, 6):  # Try up to 5 days back
+                fallback_date = datetime.now() - timedelta(days=days_back)
+                
+                # Skip weekends
+                if fallback_date.weekday() > 4:
+                    continue
+                
+                params_fallback = get_params_for_date(fallback_date, clean_symbol, symbol_type)
+                
+                try:
+                    response_fallback = requests.get(BASE_URL, params=params_fallback, headers=HEADERS)
+                    if response_fallback.status_code == 200:
+                        if expiry_date:
+                            try:
+                                if isinstance(expiry_date, str):
+                                    expiry_dt = datetime.strptime(expiry_date, '%Y-%m-%d')
+                                    fallback_text = f"Market Maker Positioning Data Retrieved Successfully for expiry: {expiry_dt.strftime('%Y-%m-%d (%A)')} (API fallback date: {fallback_date.strftime('%Y-%m-%d')})"
+                                else:
+                                    fallback_text = f"Market Maker Positioning Data Retrieved Successfully for expiry: {expiry_date.strftime('%Y-%m-%d (%A)')} (API fallback date: {fallback_date.strftime('%Y-%m-%d')})"
+                            except:
+                                fallback_text = f"Market Maker Positioning Data Retrieved Successfully for expiry: {expiry_date} (API fallback date: {fallback_date.strftime('%Y-%m-%d')})"
+                        else:
+                            fallback_text = f"Market Maker Positioning Data Retrieved Successfully for {fallback_date.strftime('%Y-%m-%d (%A)')}"
+                        return response_fallback.text, fallback_text
+                except requests.exceptions.RequestException:
+                    continue
+            
+            return None, f"Error: Failed to download CSV. Status code: {response.status_code}"
+            
+    except requests.exceptions.RequestException as e:
+        return None, f"Error during request: {e}"
+
 st.sidebar.title("Navigation")
 pages = ["Dashboard", "OI & Volume", "Gamma Exposure", "Delta Exposure", 
           "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Delta-Adjusted Value Index", "Max Pain", "GEX Surface", "IV Surface",
@@ -3490,7 +3811,7 @@ if st.session_state.current_page == "OI & Volume":
                     st.stop()
                 
                 # New: Add tabs to organize content
-                tab1, tab2, tab3, tab4 = st.tabs(["OI & Volume Charts", "Options Flow Analysis", "Premium Analysis", "Data Tables"])
+                tab1, tab2, tab3, tab4, tab5 = st.tabs(["OI & Volume Charts", "Options Flow Analysis", "Premium Analysis", "Data Tables", "Market Maker"])
                 
                 with tab1:
                     # Original OI and Volume charts
@@ -3857,6 +4178,221 @@ if st.session_state.current_page == "OI & Volume":
                             st.dataframe(puts_filtered)
                         else:
                             st.write("No puts match filters.")
+                
+                with tab5:
+                    # Market Maker tab content
+                    st.write("### 📊 Market Maker Positioning")
+                    st.write(f"**Symbol:** {ticker.upper()} | **Expiry:** {', '.join(selected_expiry_dates)}")
+                    st.info("📅 **Data Source**: OCC (Options Clearing Corporation) | **Timing**: Latest business day from past 24 hours")
+                    
+                    # Add informational section about OCC and data timing
+                    with st.expander("ℹ️ About OCC Market Maker Data", expanded=False):
+                        st.markdown("""
+                        **What is the OCC (Options Clearing Corporation)?**
+                        
+                        The OCC is the world's largest equity derivatives clearing organization and acts as the central counterparty for all options trades in the U.S. They guarantee the performance of all options contracts and provide transparency into market activity.
+                        
+                        **Market Maker Role:**
+                        - Market makers provide liquidity by continuously quoting bid and ask prices
+                        - They facilitate trading by being ready to buy or sell options contracts
+                        - Their positioning data reveals institutional sentiment and flow direction
+                        
+                        **Data Timing & Availability:**
+                        - 📅 **Report Date**: Data is from the latest business day within the past 24 hours
+                        - ⏰ **Update Schedule**: OCC updates this data daily after market close
+                        - 🕐 **Lag Time**: Data typically reflects previous trading day activity
+                        - 📊 **Coverage**: All option types (equity, index, ETF options)
+                        
+                        **Why This Matters:**
+                        - Market maker positioning can indicate institutional sentiment
+                        - Large call positions may suggest bullish positioning
+                        - Large put positions may suggest bearish positioning or hedging activity
+                        - Combined with other analysis, helps understand market dynamics
+                        
+                        **Important Notes:**
+                        - This is historical data (not real-time)
+                        - Market maker positions can change rapidly during trading hours
+                        - Data should be used in conjunction with other analysis tools
+                        """)
+                    
+                    st.write("")  # Add spacing
+                    
+                    # Initialize session state for market maker data
+                    if 'mm_data' not in st.session_state:
+                        st.session_state.mm_data = None
+                        st.session_state.mm_message = None
+                        st.session_state.mm_last_ticker = None
+                        st.session_state.mm_last_expiry = None
+                    
+                    # Check if we need to fetch new data (ticker or expiry changed)
+                    current_expiries = tuple(selected_expiry_dates) if selected_expiry_dates else None
+                    need_refresh = (
+                        st.session_state.mm_last_ticker != ticker or 
+                        st.session_state.mm_last_expiry != current_expiries or
+                        st.session_state.mm_data is None
+                    )
+                    
+                    # Auto-fetch data when symbol or expiry changes
+                    if need_refresh and ticker and current_expiries:
+                        with st.spinner("Loading market maker data for multiple expiration dates..."):
+                            combined_data = []
+                            success_messages = []
+                            
+                            # Fetch data for each selected expiration date
+                            for expiry_date in selected_expiry_dates:
+                                data, message = download_volume_csv(ticker, "U", expiry_date)
+                                if data:
+                                    combined_data.append(data)
+                                    success_messages.append(f"✓ {expiry_date}")
+                                else:
+                                    success_messages.append(f"✗ {expiry_date}: {message}")
+                            
+                            # Combine all CSV data
+                            if combined_data:
+                                # Join all CSV data with headers
+                                all_csv_data = []
+                                for i, csv_data in enumerate(combined_data):
+                                    lines = csv_data.strip().split('\n')
+                                    # Skip header lines and add only data lines
+                                    data_lines = []
+                                    for line in lines:
+                                        if ',' in line and line.strip() and line.strip()[0].isdigit():
+                                            data_lines.extend(lines[lines.index(line):])
+                                            break
+                                    all_csv_data.extend(data_lines)
+                                
+                                combined_csv = '\n'.join(all_csv_data)
+                                combined_message = f"Market Maker Data Retrieved for {len(selected_expiry_dates)} expiration dates:\n" + '\n'.join(success_messages)
+                                
+                                st.session_state.mm_data = combined_csv
+                                st.session_state.mm_message = combined_message
+                            else:
+                                st.session_state.mm_data = None
+                                st.session_state.mm_message = "Failed to retrieve data for any selected expiration dates."
+                            
+                            st.session_state.mm_last_ticker = ticker
+                            st.session_state.mm_last_expiry = current_expiries
+                    
+
+                    # Display results
+                    if st.session_state.mm_message:
+                        if st.session_state.mm_data:
+                            st.success(st.session_state.mm_message)
+                            
+                            # Process the market maker data
+                            summary_data = process_market_maker_data(st.session_state.mm_data)
+                            
+                            if summary_data:
+                                # Display summary metrics
+                                st.write("### 📊 Market Maker Summary")
+                                
+                                # Create metric columns
+                                col1, col2, col3, col4 = st.columns(4)
+                                
+                                with col1:
+                                    st.metric(
+                                        label="Total Volume",
+                                        value=f"{summary_data['total_volume']:,}"
+                                    )
+                                
+                                with col2:
+                                    call_color = st.session_state.call_color
+                                    st.markdown(f"""
+                                    <div style="border: 1px solid #333; border-radius: 5px; padding: 10px; text-align: center;">
+                                        <p style="margin: 0; font-size: 14px; color: #888;">Call Volume</p>
+                                        <p style="margin: 5px 0; font-size: 24px; font-weight: bold; color: {call_color};">{summary_data['call_volume']:,}</p>
+                                        <p style="margin: 0; font-size: 14px; color: {call_color};">{summary_data['call_percentage']:.1f}%</p>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                
+                                with col3:
+                                    put_color = st.session_state.put_color
+                                    st.markdown(f"""
+                                    <div style="border: 1px solid #333; border-radius: 5px; padding: 10px; text-align: center;">
+                                        <p style="margin: 0; font-size: 14px; color: #888;">Put Volume</p>
+                                        <p style="margin: 5px 0; font-size: 24px; font-weight: bold; color: {put_color};">{summary_data['put_volume']:,}</p>
+                                        <p style="margin: 0; font-size: 14px; color: {put_color};">{summary_data['put_percentage']:.1f}%</p>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                
+                                with col4:
+                                    if summary_data['call_volume'] > summary_data['put_volume']:
+                                        bias = "Call Bias"
+                                        bias_pct = summary_data['call_percentage'] - 50
+                                        bias_color = "#00FF00"  # Green for call bias
+                                    else:
+                                        bias = "Put Bias"
+                                        bias_pct = summary_data['put_percentage'] - 50
+                                        bias_color = "#FF0000"  # Red for put bias
+                                    
+                                    st.markdown(f"""
+                                    <div style="border: 1px solid #333; border-radius: 5px; padding: 10px; text-align: center;">
+                                        <p style="margin: 0; font-size: 14px; color: #888;">Market Bias</p>
+                                        <p style="margin: 5px 0; font-size: 24px; font-weight: bold; color: {bias_color};">{bias}</p>
+                                        <p style="margin: 0; font-size: 14px; color: {bias_color};">{'+' if bias_pct > 0 else ''}{bias_pct:.1f}%</p>
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                
+                                st.write("---")
+                                
+                                # Create and display charts
+                                if summary_data['total_volume'] > 0:
+                                    st.write("### 📈 Visual Analysis")
+                                    
+                                    fig_pie, fig_bar = create_market_maker_charts(summary_data)
+                                    
+                                    # Display charts in columns
+                                    chart_col1, chart_col2 = st.columns(2)
+                                    
+                                    with chart_col1:
+                                        st.plotly_chart(fig_pie, use_container_width=True)
+                                    
+                                    with chart_col2:
+                                        st.plotly_chart(fig_bar, use_container_width=True)
+                                
+                                # Optional: Show data table in collapsible section
+                                with st.expander("📋 View Raw Data Table", expanded=False):
+                                    if not summary_data['raw_data'].empty:
+                                        st.dataframe(summary_data['raw_data'], use_container_width=True)
+                                    else:
+                                        st.warning("No data available in the table.")
+                            else:
+                                st.warning("Unable to process market maker data. The data format may not be recognized.")
+                                
+                        else:
+                            st.error(st.session_state.mm_message)
+                    else:
+                        # Show loading state or instructions
+                        if not ticker:
+                            st.info("💡 Enter a symbol above to view market maker positioning data.")
+                        elif not current_expiries:
+                            st.info("💡 Select expiration date(s) to view market maker positioning data.")
+                        else:
+                            st.info("🔄 Loading market maker data automatically...")
+                        
+                        # Show some help information
+                        with st.expander("ℹ️ About Market Maker Data"):
+                            st.write("""
+                            **Market Maker Positioning Data from OCC:**
+                            
+                            - **Source**: Options Clearing Corporation (OCC)
+                            - **Data Type**: Market maker volume and positioning
+                            - **Update Frequency**: Daily (business days only)
+                            - **Report Date**: Latest business day from 24 hours ago
+                            - **Coverage**: All option types (Equity, Index, etc.)
+                            
+                            **How it works:**
+                            - Data loads automatically when you enter a symbol and select expiration date(s)
+                            - Supports multiple expiration dates - data is combined automatically
+                            - Data refreshes automatically when you change the symbol or expiration selection
+                            
+                            **Data shows:**
+                            - Call vs Put volume distribution
+                            - Market maker activity breakdown
+                            - Symbol-specific positioning data
+                            
+                            **Note**: Data availability depends on market maker activity and OCC reporting schedules.
+                            """)
 
 elif st.session_state.current_page == "Gamma Exposure":
     exposure_container = st.container()
@@ -5822,13 +6358,21 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
 # -----------------------------------------
 # Auto-refresh
 # -----------------------------------------
-refresh_rate = float(st.session_state.get('refresh_rate', 10))  # Convert to float
-if not st.session_state.get("loading_complete", False):
-    st.session_state.loading_complete = True
-    st.rerun()
-else:
-    time.sleep(refresh_rate)
-    st.rerun()
+# Check if we're on the OI & Volume page and if market maker data has been fetched
+is_market_maker_active = (
+    st.session_state.current_page == "OI & Volume" and
+    st.session_state.get('mm_data') is not None
+)
+
+# Only auto-refresh if not on market maker tab with active data
+if not is_market_maker_active:
+    refresh_rate = float(st.session_state.get('refresh_rate', 10))  # Convert to float
+    if not st.session_state.get("loading_complete", False):
+        st.session_state.loading_complete = True
+        st.rerun()
+    else:
+        time.sleep(refresh_rate)
+        st.rerun()
 
 def calculate_heikin_ashi(df):
     """Calculate Heikin Ashi candlestick values."""
