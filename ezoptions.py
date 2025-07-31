@@ -41,6 +41,226 @@ def calculate_heikin_ashi(df):
     return ha_df
 
 
+def calculate_technical_indicators(df):
+    """Calculate various technical indicators for intraday data."""
+    if df is None or len(df) == 0:
+        return {}
+    
+    indicators = {}
+    selected_indicators = st.session_state.get('selected_indicators', [])
+    
+    # EMA calculations
+    if "EMA (Exponential Moving Average)" in selected_indicators and st.session_state.get('ema_periods'):
+        indicators['ema'] = {}
+        for period in st.session_state.ema_periods:
+            if len(df) >= period:
+                indicators['ema'][period] = df['Close'].ewm(span=period, adjust=False).mean()
+    
+    # SMA calculations
+    if "SMA (Simple Moving Average)" in selected_indicators and st.session_state.get('sma_periods'):
+        indicators['sma'] = {}
+        for period in st.session_state.sma_periods:
+            if len(df) >= period:
+                indicators['sma'][period] = df['Close'].rolling(window=period).mean()
+    
+    # Bollinger Bands
+    if "Bollinger Bands" in selected_indicators and st.session_state.get('bollinger_period'):
+        period = st.session_state.bollinger_period
+        std_dev = st.session_state.get('bollinger_std', 2.0)
+        if len(df) >= period:
+            sma = df['Close'].rolling(window=period).mean()
+            std = df['Close'].rolling(window=period).std()
+            indicators['bollinger'] = {
+                'upper': sma + (std * std_dev),
+                'middle': sma,
+                'lower': sma - (std * std_dev)
+            }
+    
+    # RSI
+    if "RSI (Relative Strength Index)" in selected_indicators and st.session_state.get('rsi_period'):
+        period = st.session_state.rsi_period
+        if len(df) >= period + 1:
+            delta = df['Close'].diff()
+            gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+            loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+            rs = gain / loss
+            indicators['rsi'] = 100 - (100 / (1 + rs))
+    
+    # VWAP
+    if "VWAP (Volume Weighted Average Price)" in selected_indicators and 'Volume' in df.columns:
+        typical_price = (df['High'] + df['Low'] + df['Close']) / 3
+        cumulative_volume = df['Volume'].cumsum()
+        cumulative_price_volume = (typical_price * df['Volume']).cumsum()
+        indicators['vwap'] = cumulative_price_volume / cumulative_volume
+    
+    return indicators
+
+
+def calculate_fibonacci_levels(df):
+    """Calculate Fibonacci retracement levels based on recent high and low."""
+    if df is None or len(df) == 0:
+        return {}
+    
+    # Use the full range for fibonacci calculation
+    high = df['High'].max()
+    low = df['Low'].min()
+    diff = high - low
+    
+    fibonacci_ratios = [0.0, 0.236, 0.382, 0.5, 0.618, 0.786, 1.0]
+    levels = {}
+    
+    for ratio in fibonacci_ratios:
+        levels[f"{ratio:.3f}"] = high - (diff * ratio)
+    
+    return levels
+
+
+def add_technical_indicators_to_chart(fig, indicators, fibonacci_levels=None):
+    """Add technical indicators to the intraday chart."""
+    if not indicators:
+        return fig
+    
+    # Color palette for indicators
+    colors = ['#FFD700', '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#F0E68C']
+    color_index = 0
+    
+    # Add EMAs
+    if 'ema' in indicators:
+        ema_periods = list(indicators['ema'].keys())
+        for i, (period, ema_data) in enumerate(indicators['ema'].items()):
+            fig.add_trace(
+                go.Scatter(
+                    x=ema_data.index,
+                    y=ema_data.values,
+                    mode='lines',
+                    name=f'EMA {period}',
+                    line=dict(color=colors[color_index % len(colors)], width=2),
+                    opacity=0.8
+                ),
+                secondary_y=False
+            )
+            color_index += 1
+        
+        # Add EMA cloud if we have at least 2 EMAs
+        if len(ema_periods) >= 2:
+            # Create cloud between first two EMAs (typically fastest and slower)
+            ema1 = indicators['ema'][ema_periods[0]]
+            ema2 = indicators['ema'][ema_periods[1]]
+            
+            # Determine which EMA is above/below for coloring
+            fig.add_trace(
+                go.Scatter(
+                    x=ema1.index,
+                    y=ema1.values,
+                    mode='lines',
+                    line=dict(color='rgba(0,0,0,0)'),  # Invisible line
+                    showlegend=False,
+                    hoverinfo='skip'
+                ),
+                secondary_y=False
+            )
+            fig.add_trace(
+                go.Scatter(
+                    x=ema2.index,
+                    y=ema2.values,
+                    mode='lines',
+                    line=dict(color='rgba(0,0,0,0)'),  # Invisible line
+                    fill='tonexty',
+                    fillcolor='rgba(100, 150, 200, 0.1)',  # Light blue cloud
+                    name=f'EMA Cloud ({ema_periods[0]}-{ema_periods[1]})',
+                    showlegend=True,
+                    hoverinfo='skip'
+                ),
+                secondary_y=False
+            )
+    
+    # Add SMAs
+    if 'sma' in indicators:
+        for period, sma_data in indicators['sma'].items():
+            fig.add_trace(
+                go.Scatter(
+                    x=sma_data.index,
+                    y=sma_data.values,
+                    mode='lines',
+                    name=f'SMA {period}',
+                    line=dict(color=colors[color_index % len(colors)], width=2, dash='dash'),
+                    opacity=0.8
+                ),
+                secondary_y=False
+            )
+            color_index += 1
+    
+    # Add Bollinger Bands
+    if 'bollinger' in indicators:
+        bb = indicators['bollinger']
+        # Add middle line first
+        fig.add_trace(
+            go.Scatter(
+                x=bb['middle'].index,
+                y=bb['middle'].values,
+                mode='lines',
+                name=f'BB Middle ({st.session_state.bollinger_period})',
+                line=dict(color='gray', width=1, dash='dot'),
+                opacity=0.7
+            ),
+            secondary_y=False
+        )
+        # Upper band
+        fig.add_trace(
+            go.Scatter(
+                x=bb['upper'].index,
+                y=bb['upper'].values,
+                mode='lines',
+                name='BB Upper',
+                line=dict(color='rgba(128, 128, 128, 0.5)', width=1),
+                showlegend=False
+            ),
+            secondary_y=False
+        )
+        # Lower band with fill
+        fig.add_trace(
+            go.Scatter(
+                x=bb['lower'].index,
+                y=bb['lower'].values,
+                mode='lines',
+                name='BB Lower',
+                line=dict(color='rgba(128, 128, 128, 0.5)', width=1),
+                fill='tonexty',
+                fillcolor='rgba(128, 128, 128, 0.1)',
+                showlegend=False
+            ),
+            secondary_y=False
+        )
+    
+    # Add VWAP
+    if 'vwap' in indicators:
+        fig.add_trace(
+            go.Scatter(
+                x=indicators['vwap'].index,
+                y=indicators['vwap'].values,
+                mode='lines',
+                name='VWAP',
+                line=dict(color='orange', width=2, dash='dashdot'),
+                opacity=0.8
+            ),
+            secondary_y=False
+        )
+    
+    # Add Fibonacci levels as horizontal lines
+    if fibonacci_levels:
+        for level_name, level_value in fibonacci_levels.items():
+            fig.add_hline(
+                y=level_value,
+                line_dash="dash",
+                line_color="rgba(255, 255, 255, 0.4)",
+                annotation_text=f"Fib {level_name}",
+                annotation_position="right",
+                annotation_font_size=10
+            )
+    
+    return fig
+
+
 @contextmanager
 def st_thread_context():
     """Thread context management for Streamlit"""
@@ -2159,7 +2379,16 @@ def reset_session_state():
         'chart_type',
         'refresh_rate',
         'intraday_chart_type',
-        'candlestick_type' 
+        'candlestick_type',
+        'show_technical_indicators',
+        'selected_indicators',
+        'ema_periods',
+        'sma_periods',
+        'bollinger_period',
+        'bollinger_std',
+        'rsi_period',
+        'fibonacci_levels',
+        'vwap_enabled'
     }
     
     # Initialize visibility settings if they don't exist
@@ -2664,6 +2893,109 @@ def chart_settings():
         if show_vix != st.session_state.show_vix_overlay:
             st.session_state.show_vix_overlay = show_vix
 
+        # Technical Indicators Settings
+        st.write("Technical Indicators:")
+        
+        # Initialize technical indicators settings
+        if 'show_technical_indicators' not in st.session_state:
+            st.session_state.show_technical_indicators = False
+        if 'selected_indicators' not in st.session_state:
+            st.session_state.selected_indicators = []
+        if 'ema_periods' not in st.session_state:
+            st.session_state.ema_periods = [9, 21, 50]
+        if 'sma_periods' not in st.session_state:
+            st.session_state.sma_periods = [20, 50]
+        if 'bollinger_period' not in st.session_state:
+            st.session_state.bollinger_period = 20
+        if 'bollinger_std' not in st.session_state:
+            st.session_state.bollinger_std = 2.0
+        if 'rsi_period' not in st.session_state:
+            st.session_state.rsi_period = 14
+        if 'fibonacci_levels' not in st.session_state:
+            st.session_state.fibonacci_levels = True
+        if 'vwap_enabled' not in st.session_state:
+            st.session_state.vwap_enabled = False
+        
+        show_technical = st.checkbox("Enable Technical Indicators", value=st.session_state.show_technical_indicators, key="enable_technical_indicators")
+        
+        # Update technical indicators toggle immediately
+        if show_technical != st.session_state.show_technical_indicators:
+            st.session_state.show_technical_indicators = show_technical
+            # Clear selected indicators when disabling
+            if not show_technical:
+                st.session_state.selected_indicators = []
+        
+        if show_technical:
+            # Available indicators
+            available_indicators = [
+                "EMA (Exponential Moving Average)",
+                "SMA (Simple Moving Average)", 
+                "Bollinger Bands",
+                "RSI (Relative Strength Index)",
+                "VWAP (Volume Weighted Average Price)",
+                "Fibonacci Retracements"
+            ]
+            
+            selected_indicators = st.multiselect(
+                "Select Indicators:",
+                available_indicators,
+                default=st.session_state.selected_indicators,
+                key="technical_indicators_selector"
+            )
+            
+            # Update session state immediately when selection changes
+            if selected_indicators != st.session_state.selected_indicators:
+                st.session_state.selected_indicators = selected_indicators
+            
+            # EMA Settings
+            if "EMA (Exponential Moving Average)" in selected_indicators:
+                st.write("**EMA Settings:**")
+                ema_input = st.text_input(
+                    "EMA Periods (comma-separated)",
+                    value=",".join(map(str, st.session_state.ema_periods)),
+                    help="e.g., 9,21,50",
+                    key="ema_periods_input"
+                )
+                try:
+                    ema_periods = [int(x.strip()) for x in ema_input.split(",") if x.strip()]
+                    if ema_periods != st.session_state.ema_periods:
+                        st.session_state.ema_periods = ema_periods
+                except:
+                    st.warning("Invalid EMA periods format. Use comma-separated integers.")
+            
+            # SMA Settings  
+            if "SMA (Simple Moving Average)" in selected_indicators:
+                st.write("**SMA Settings:**")
+                sma_input = st.text_input(
+                    "SMA Periods (comma-separated)",
+                    value=",".join(map(str, st.session_state.sma_periods)),
+                    help="e.g., 20,50",
+                    key="sma_periods_input"
+                )
+                try:
+                    sma_periods = [int(x.strip()) for x in sma_input.split(",") if x.strip()]
+                    if sma_periods != st.session_state.sma_periods:
+                        st.session_state.sma_periods = sma_periods
+                except:
+                    st.warning("Invalid SMA periods format. Use comma-separated integers.")
+            
+            # Bollinger Bands Settings
+            if "Bollinger Bands" in selected_indicators:
+                st.write("**Bollinger Bands Settings:**")
+                bb_period = st.number_input("Period", min_value=5, max_value=50, value=st.session_state.bollinger_period, key="bb_period_input")
+                bb_std = st.number_input("Standard Deviations", min_value=1.0, max_value=3.0, value=st.session_state.bollinger_std, step=0.1, key="bb_std_input")
+                if bb_period != st.session_state.bollinger_period:
+                    st.session_state.bollinger_period = bb_period
+                if bb_std != st.session_state.bollinger_std:
+                    st.session_state.bollinger_std = bb_std
+            
+            # RSI Settings
+            if "RSI (Relative Strength Index)" in selected_indicators:
+                st.write("**RSI Settings:**")
+                rsi_period = st.number_input("RSI Period", min_value=5, max_value=30, value=st.session_state.rsi_period, key="rsi_period_input")
+                if rsi_period != st.session_state.rsi_period:
+                    st.session_state.rsi_period = rsi_period
+            
         if 'chart_text_size' not in st.session_state:
             st.session_state.chart_text_size = 15  # Default text size
             
@@ -5048,6 +5380,19 @@ if st.session_state.current_page == "Dashboard":
                                 secondary_y=False
                             )
 
+                        # Add technical indicators if enabled
+                        if st.session_state.get('show_technical_indicators') and st.session_state.get('selected_indicators'):
+                            # Calculate technical indicators
+                            indicators = calculate_technical_indicators(intraday_data)
+                            
+                            # Calculate Fibonacci levels if selected
+                            fibonacci_levels = None
+                            if "Fibonacci Retracements" in st.session_state.selected_indicators:
+                                fibonacci_levels = calculate_fibonacci_levels(intraday_data)
+                            
+                            # Add indicators to chart
+                            fig_intraday = add_technical_indicators_to_chart(fig_intraday, indicators, fibonacci_levels)
+
                         # Calculate base y-axis range from price data
                         price_min = intraday_data['Low'].min()
                         price_max = intraday_data['High'].max()
@@ -5286,16 +5631,26 @@ if st.session_state.current_page == "Dashboard":
                             xaxis=dict(
                                 autorange=True, 
                                 rangeslider=dict(visible=False),
+                                showgrid=False,
                                 tickfont=dict(size=st.session_state.chart_text_size)
                             ),
                             yaxis=dict(
                                 autorange=True,
                                 fixedrange=False,
-                                showgrid=True,
+                                showgrid=False,
                                 zeroline=False,
                                 tickfont=dict(size=st.session_state.chart_text_size)
                             ),
-                            showlegend=False  # Remove legend
+                            showlegend=bool(st.session_state.get('show_technical_indicators') and st.session_state.get('selected_indicators')),  # Show legend when technical indicators are enabled
+                            legend=dict(
+                                x=1.02,
+                                y=1,
+                                xanchor="left",
+                                yanchor="top",
+                                bgcolor="rgba(0,0,0,0.5)",
+                                bordercolor="rgba(255,255,255,0.2)",
+                                borderwidth=1
+                            )
                         )
 
 
