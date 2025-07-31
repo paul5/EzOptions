@@ -275,7 +275,13 @@ def st_thread_context():
 
 
 with st_thread_context():
-    st.set_page_config(layout="wide")
+    st.set_page_config(
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
+
+# Prevent page dimming during reruns
+st.markdown("<style>.element-container{opacity:1 !important}</style>", unsafe_allow_html=True)
 
 # Initialize session state for colors if not already set
 if 'call_color' not in st.session_state:
@@ -2078,10 +2084,9 @@ def calculate_charm(flag, S, K, t, sigma):
         norm_d1 = norm.pdf(d1)
         
         if flag == 'c':
-            charm = -norm_d1 * (2*(r + 0.5*sigma**2)*t - d2*sigma*sqrt(t)) / (2*t*sigma*sqrt(t))
+            charm = -norm_d1 * (2*r*t - d2*sigma*sqrt(t)) / (2*t*sigma*sqrt(t))
         else:  # put
-            charm = -norm_d1 * (2*(r + 0.5*sigma**2)*t - d2*sigma*sqrt(t)) / (2*t*sigma*sqrt(t))
-            charm = -charm  # Negative for puts
+            charm = -norm_d1 * (2*r*t - d2*sigma*sqrt(t)) / (2*t*sigma*sqrt(t)) - r*norm.cdf(-d2)
         
         return charm
     except Exception as e:
