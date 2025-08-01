@@ -2181,15 +2181,22 @@ def find_probability_strikes(calls_df, puts_df, S, expiry_date, target_prob=0.5)
         # For 50% probability: find the strike where prob_above ≈ 0.5 (median)
         # For other probabilities: find strikes where prob_above = target_prob and prob_above = 1-target_prob
         
-        # For all probabilities: find upper and lower confidence bounds
-        # Strike where prob_above = target_prob (lower bound of confidence interval)
-        prob_above_target = prob_df.iloc[(prob_df['prob_above'] - target_prob).abs().argsort()[:1]]
+        # Industry standard: Use target_prob directly as delta levels
+        # For 16 delta: find strikes where prob_above = 0.16 and prob_above = 0.84
+        # For 30 delta: find strikes where prob_above = 0.30 and prob_above = 0.70
+        
+        # Lower bound: target_prob chance of being above
+        lower_prob = target_prob
+        # Upper bound: (1-target_prob) chance of being above  
+        upper_prob = 1 - target_prob
+        
+        # Find strike where prob_above = lower_prob (lower bound of confidence interval)
+        prob_above_target = prob_df.iloc[(prob_df['prob_above'] - lower_prob).abs().argsort()[:1]]
         strike_above = prob_above_target['strike'].iloc[0] if not prob_above_target.empty else None
         actual_prob_above = prob_above_target['prob_above'].iloc[0] if not prob_above_target.empty else None
         
-        # Strike where prob_above = 1-target_prob (upper bound of confidence interval)
-        complement_prob = 1 - target_prob
-        prob_below_target = prob_df.iloc[(prob_df['prob_above'] - complement_prob).abs().argsort()[:1]]
+        # Find strike where prob_above = upper_prob (upper bound of confidence interval)
+        prob_below_target = prob_df.iloc[(prob_df['prob_above'] - upper_prob).abs().argsort()[:1]]
         strike_below = prob_below_target['strike'].iloc[0] if not prob_below_target.empty else None
         actual_prob_below = 1 - prob_below_target['prob_above'].iloc[0] if not prob_below_target.empty else None
         
@@ -2315,7 +2322,7 @@ def calculate_probability_distribution(calls_df, puts_df, S, expiry_date):
         print(f"Error calculating probability distribution: {e}")
         return pd.DataFrame()
 
-def create_implied_probabilities_chart(prob_df, S, prob_50_data, prob_70_data, implied_move_data):
+def create_implied_probabilities_chart(prob_df, S, prob_16_data, prob_30_data, implied_move_data):
     """Create simplified implied probabilities visualization focusing on key levels."""
     try:
         # Get colors from session state
@@ -2342,32 +2349,32 @@ def create_implied_probabilities_chart(prob_df, S, prob_50_data, prob_70_data, i
             'type': 'neutral'
         })
         
-        # Add probability levels
-        if prob_50_data:
-            if prob_50_data['strike_above']:
+                # Add probability levels (delta-based)
+        if prob_16_data:
+            if prob_16_data['strike_above']:
                 prob_levels.append({
-                    'level': '50% Above',
-                    'strike': prob_50_data['strike_above'],
+                    'level': '16Δ Above (1σ)',
+                    'strike': prob_16_data['strike_above'],
                     'type': 'call'
                 })
-            if prob_50_data['strike_below']:
+            if prob_16_data['strike_below']:
                 prob_levels.append({
-                    'level': '50% Below',
-                    'strike': prob_50_data['strike_below'],
+                    'level': '16Δ Below (1σ)',
+                    'strike': prob_16_data['strike_below'],
                     'type': 'put'
                 })
         
-        if prob_70_data:
-            if prob_70_data['strike_above']:
+        if prob_30_data:
+            if prob_30_data['strike_above']:
                 prob_levels.append({
-                    'level': '70% Above',
-                    'strike': prob_70_data['strike_above'],
+                    'level': '30Δ Above',
+                    'strike': prob_30_data['strike_above'],
                     'type': 'call'
                 })
-            if prob_70_data['strike_below']:
+            if prob_30_data['strike_below']:
                 prob_levels.append({
-                    'level': '70% Below',
-                    'strike': prob_70_data['strike_below'],
+                    'level': '30Δ Below', 
+                    'strike': prob_30_data['strike_below'],
                     'type': 'put'
                 })
         
@@ -7104,9 +7111,10 @@ elif st.session_state.current_page == "Implied Probabilities":
         **Analyze option-implied probabilities and expected moves based on market pricing.**
         
         This page calculates:
-        - **50% and 70% probability levels** - Strikes where there's exactly a 50% or 70% chance of being above/below
+        - **16 Delta levels (1σ)** - Industry standard one standard deviation levels (16%/84% probability)
+        - **30 Delta levels** - Common institutional trading levels (30%/70% probability)
         - **Implied move** - Expected price range based on straddle pricing
-        - **Probability distribution** - Market-implied likelihood of price levels
+        - **Probability distribution** - Market-implied likelihood of price levels using Black-Scholes
         - **Trading ranges** - Expected breakout levels and support/resistance zones
         """)
         
@@ -7172,9 +7180,9 @@ elif st.session_state.current_page == "Implied Probabilities":
                     # Calculate implied move
                     implied_move_data = calculate_implied_move(S, nearest_calls, nearest_puts)
                     
-                    # Calculate 50% and 70% probability strikes  
-                    prob_50_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.5)
-                    prob_70_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.7)
+                    # Calculate delta-based probability strikes (industry standard)
+                    prob_16_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.16)  # ~1 standard deviation
+                    prob_30_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.30)  # Common institutional level
                     
                     # Display metrics in columns
                     col1, col2, col3 = st.columns(3)
@@ -7186,20 +7194,20 @@ elif st.session_state.current_page == "Implied Probabilities":
                                      f"({implied_move_data['implied_move_pct']:.1f}%)")
                     
                     with col2:
-                        if prob_50_data and prob_50_data['strike_above']:
-                            st.metric("50% Prob Above", f"${prob_50_data['strike_above']:.2f}", 
-                                     f"Actual: {prob_50_data['prob_above']*100:.1f}% above")
-                        if prob_50_data and prob_50_data['strike_below']:
-                            st.metric("50% Prob Below", f"${prob_50_data['strike_below']:.2f}", 
-                                     f"Actual: {prob_50_data['prob_below']*100:.1f}% below")
+                        if prob_16_data and prob_16_data['strike_above']:
+                            st.metric("16Δ Above (1σ) - 16%", f"${prob_16_data['strike_above']:.2f}", 
+                                     f"Actual: {prob_16_data['prob_above']*100:.1f}% above")
+                        if prob_16_data and prob_16_data['strike_below']:
+                            st.metric("16Δ Below (1σ) - 84%", f"${prob_16_data['strike_below']:.2f}", 
+                                     f"Actual: {prob_16_data['prob_below']*100:.1f}% below")
                     
                     with col3:
-                        if prob_70_data and prob_70_data['strike_above']:
-                            st.metric("70% Prob Above", f"${prob_70_data['strike_above']:.2f}", 
-                                     f"Actual: {prob_70_data['prob_above']*100:.1f}% above")
-                        if prob_70_data and prob_70_data['strike_below']:
-                            st.metric("70% Prob Below", f"${prob_70_data['strike_below']:.2f}", 
-                                     f"Actual: {prob_70_data['prob_below']*100:.1f}% below")
+                        if prob_30_data and prob_30_data['strike_above']:
+                            st.metric("30Δ Above - 30%", f"${prob_30_data['strike_above']:.2f}", 
+                                     f"Actual: {prob_30_data['prob_above']*100:.1f}% above")
+                        if prob_30_data and prob_30_data['strike_below']:
+                            st.metric("30Δ Below - 70%", f"${prob_30_data['strike_below']:.2f}", 
+                                     f"Actual: {prob_30_data['prob_below']*100:.1f}% below")
                     
                     # Expected trading range with better formatting
                     if implied_move_data:
@@ -7218,20 +7226,20 @@ elif st.session_state.current_page == "Implied Probabilities":
                     # Probability levels relative to current price with better formatting
                     st.subheader("🎯 Price Targets & Movement Required")
                     
-                    # Create tabs for different probability levels
-                    prob_tab1, prob_tab2 = st.tabs(["50% Confidence Bounds", "70% Confidence Bounds"])
+                    # Create tabs for different delta levels (industry standard)
+                    prob_tab1, prob_tab2 = st.tabs(["16Δ Levels (1σ) - 16%/84%", "30Δ Levels - 30%/70%"])
                     
                     with prob_tab1:
-                        if prob_50_data and prob_50_data['strike_above'] and prob_50_data['strike_below']:
-                            strike_50_above = prob_50_data['strike_above']
-                            strike_50_below = prob_50_data['strike_below']
+                        if prob_16_data and prob_16_data['strike_above'] and prob_16_data['strike_below']:
+                            strike_16_above = prob_16_data['strike_above']
+                            strike_16_below = prob_16_data['strike_below']
                             
                             # Ensure proper ordering
-                            if strike_50_above < strike_50_below:
-                                strike_50_above, strike_50_below = strike_50_below, strike_50_above
+                            if strike_16_above < strike_16_below:
+                                strike_16_above, strike_16_below = strike_16_below, strike_16_above
                             
-                            distance_above = strike_50_above - S
-                            distance_below = strike_50_below - S
+                            distance_above = strike_16_above - S
+                            distance_below = strike_16_below - S
                             distance_pct_above = (distance_above / S) * 100
                             distance_pct_below = (distance_below / S) * 100
                             
@@ -7239,13 +7247,13 @@ elif st.session_state.current_page == "Implied Probabilities":
                             bound_col1, bound_col2 = st.columns(2)
                             
                             with bound_col1:
-                                st.markdown("**🔺 Upper 50% Bound**")
-                                st.metric("Strike Price", f"${strike_50_above:.2f}")
+                                st.markdown("**🔺 16Δ Upper Level (1σ) - 16% Above**")
+                                st.metric("Strike Price", f"${strike_16_above:.2f}")
                                 st.metric("Distance", f"${distance_above:.2f}", f"⬆️ {distance_pct_above:+.2f}%")
                                 
                             with bound_col2:
-                                st.markdown("**🔻 Lower 50% Bound**")
-                                st.metric("Strike Price", f"${strike_50_below:.2f}")
+                                st.markdown("**🔻 16Δ Lower Level (1σ) - 84% Above**")
+                                st.metric("Strike Price", f"${strike_16_below:.2f}")
                                 st.metric("Distance", f"${abs(distance_below):.2f}", f"⬇️ {distance_pct_below:+.2f}%")
                             
                             # Range analysis
@@ -7253,7 +7261,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                             range_col1, range_col2, range_col3 = st.columns(3)
                             
                             with range_col1:
-                                range_width = strike_50_above - strike_50_below
+                                range_width = strike_16_above - strike_16_below
                                 st.metric("Total Range", f"${range_width:.2f}")
                             
                             with range_col2:
@@ -7262,28 +7270,28 @@ elif st.session_state.current_page == "Implied Probabilities":
                             
                             with range_col3:
                                 # Calculate if current price is within the range
-                                if strike_50_below <= S <= strike_50_above:
+                                if strike_16_below <= S <= strike_16_above:
                                     position = "Within Range ✅"
-                                elif S > strike_50_above:
+                                elif S > strike_16_above:
                                     position = "Above Range ⬆️"
                                 else:
                                     position = "Below Range ⬇️"
                                 st.metric("Current Position", position)
                             
                             # Explanation
-                            st.info(f"💡 **50% Confidence Bounds**: There's a 50% probability the stock will finish between ${strike_50_below:.2f} and ${strike_50_above:.2f} at expiration.")
+                            st.info(f"💡 **16 Delta Levels (1σ) - 16%/84%**: These represent approximate one standard deviation levels. The upper level has a 16% probability above, lower level has 84% probability above. There's roughly a 68% probability the stock will finish between ${strike_16_below:.2f} and ${strike_16_above:.2f} at expiration.")
                     
                     with prob_tab2:
-                        if prob_70_data and prob_70_data['strike_above'] and prob_70_data['strike_below']:
-                            strike_70_above = prob_70_data['strike_above']
-                            strike_70_below = prob_70_data['strike_below']
+                        if prob_30_data and prob_30_data['strike_above'] and prob_30_data['strike_below']:
+                            strike_30_above = prob_30_data['strike_above']
+                            strike_30_below = prob_30_data['strike_below']
                             
-                            # Fix the ordering issue - ensure above > below
-                            if strike_70_above < strike_70_below:
-                                strike_70_above, strike_70_below = strike_70_below, strike_70_above
+                            # Ensure proper ordering
+                            if strike_30_above < strike_30_below:
+                                strike_30_above, strike_30_below = strike_30_below, strike_30_above
                             
-                            distance_above = strike_70_above - S
-                            distance_below = strike_70_below - S
+                            distance_above = strike_30_above - S
+                            distance_below = strike_30_below - S
                             distance_pct_above = (distance_above / S) * 100
                             distance_pct_below = (distance_below / S) * 100
                             
@@ -7291,13 +7299,13 @@ elif st.session_state.current_page == "Implied Probabilities":
                             bound_col1, bound_col2 = st.columns(2)
                             
                             with bound_col1:
-                                st.markdown("**🔺 Upper 70% Bound**")
-                                st.metric("Strike Price", f"${strike_70_above:.2f}")
+                                st.markdown("**🔺 30Δ Upper Level - 30% Above**")
+                                st.metric("Strike Price", f"${strike_30_above:.2f}")
                                 st.metric("Distance", f"${distance_above:.2f}", f"⬆️ {distance_pct_above:+.2f}%")
                                 
                             with bound_col2:
-                                st.markdown("**🔻 Lower 70% Bound**")
-                                st.metric("Strike Price", f"${strike_70_below:.2f}")
+                                st.markdown("**🔻 30Δ Lower Level - 70% Above**")
+                                st.metric("Strike Price", f"${strike_30_below:.2f}")
                                 st.metric("Distance", f"${abs(distance_below):.2f}", f"⬇️ {distance_pct_below:+.2f}%")
                             
                             # Range analysis
@@ -7305,7 +7313,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                             range_col1, range_col2, range_col3 = st.columns(3)
                             
                             with range_col1:
-                                range_width = strike_70_above - strike_70_below
+                                range_width = strike_30_above - strike_30_below
                                 st.metric("Total Range", f"${range_width:.2f}")
                             
                             with range_col2:
@@ -7314,16 +7322,16 @@ elif st.session_state.current_page == "Implied Probabilities":
                             
                             with range_col3:
                                 # Calculate if current price is within the range
-                                if strike_70_below <= S <= strike_70_above:
+                                if strike_30_below <= S <= strike_30_above:
                                     position = "Within Range ✅"
-                                elif S > strike_70_above:
+                                elif S > strike_30_above:
                                     position = "Above Range ⬆️"
                                 else:
                                     position = "Below Range ⬇️"
                                 st.metric("Current Position", position)
                             
                             # Explanation
-                            st.info(f"💡 **70% Confidence Bounds**: There's a 70% probability the stock will finish between ${strike_70_below:.2f} and ${strike_70_above:.2f} at expiration.")
+                            st.info(f"💡 **30 Delta Levels - 30%/70%**: Common institutional trading levels. The upper level has a 30% probability above, lower level has 70% probability above. There's roughly a 40% probability the stock will finish between ${strike_30_below:.2f} and ${strike_30_above:.2f} at expiration.")
                 
                 with tab2:
                     st.subheader("Probability Levels Analysis")
@@ -7368,7 +7376,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                     
                     # Create comprehensive chart
                     if not prob_df.empty:
-                        fig = create_implied_probabilities_chart(prob_df, S, prob_50_data, prob_70_data, implied_move_data)
+                        fig = create_implied_probabilities_chart(prob_df, S, prob_16_data, prob_30_data, implied_move_data)
                         st.plotly_chart(fig, use_container_width=True)
                     else:
                         st.warning("Could not calculate probability distribution.")
