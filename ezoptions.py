@@ -2137,6 +2137,335 @@ def calculate_vomma(flag, S, K, t, sigma):
         st.error(f"Error calculating vomma: {e}")
         return None
 
+def calculate_implied_move(S, calls_df, puts_df):
+    """Calculate implied move based on straddle prices."""
+    try:
+        # Find ATM strike (closest to current price)
+        all_strikes = pd.concat([calls_df['strike'], puts_df['strike']]).unique()
+        atm_strike = min(all_strikes, key=lambda x: abs(x - S))
+        
+        # Get ATM call and put prices
+        atm_call = calls_df[calls_df['strike'] == atm_strike]
+        atm_put = puts_df[puts_df['strike'] == atm_strike]
+        
+        if not atm_call.empty and not atm_put.empty:
+            call_price = atm_call['lastPrice'].iloc[0] if 'lastPrice' in atm_call.columns else atm_call['ask'].iloc[0]
+            put_price = atm_put['lastPrice'].iloc[0] if 'lastPrice' in atm_put.columns else atm_put['ask'].iloc[0]
+            
+            straddle_price = call_price + put_price
+            implied_move_pct = (straddle_price / S) * 100
+            implied_move_dollars = straddle_price
+            
+            return {
+                'atm_strike': atm_strike,
+                'straddle_price': straddle_price,
+                'implied_move_pct': implied_move_pct,
+                'implied_move_dollars': implied_move_dollars,
+                'upper_range': S + implied_move_dollars,
+                'lower_range': S - implied_move_dollars
+            }
+    except Exception as e:
+        print(f"Error calculating implied move: {e}")
+    
+    return None
+
+def find_probability_strikes(calls_df, puts_df, S, expiry_date, target_prob=0.5):
+    """Find strikes where there's exactly target_prob chance of being above/below at expiration."""
+    try:
+        # Calculate probability distribution first
+        prob_df = calculate_probability_distribution(calls_df, puts_df, S, expiry_date)
+        
+        if prob_df.empty:
+            return None
+        
+        # Find strike closest to target probability above
+        # This finds the strike where prob_above = target_prob
+        prob_above_target = prob_df.iloc[(prob_df['prob_above'] - target_prob).abs().argsort()[:1]]
+        strike_above = prob_above_target['strike'].iloc[0] if not prob_above_target.empty else None
+        actual_prob_above = prob_above_target['prob_above'].iloc[0] if not prob_above_target.empty else None
+        
+        # Find strike closest to target probability below
+        # This finds the strike where prob_below = target_prob (which means prob_above = 1 - target_prob)
+        prob_below_target = prob_df.iloc[(prob_df['prob_below'] - target_prob).abs().argsort()[:1]]
+        strike_below = prob_below_target['strike'].iloc[0] if not prob_below_target.empty else None
+        actual_prob_below = prob_below_target['prob_below'].iloc[0] if not prob_below_target.empty else None
+        
+        return {
+            'strike_above': strike_above,  # Strike with target_prob chance of being above
+            'prob_above': actual_prob_above,
+            'strike_below': strike_below,  # Strike with target_prob chance of being below  
+            'prob_below': actual_prob_below,
+            'target_probability': target_prob
+        }
+    except Exception as e:
+        print(f"Error finding probability strikes: {e}")
+        return None
+
+def find_delta_strikes(calls_df, puts_df, target_delta=0.5):
+    """Find strikes closest to the target delta (for delta-based analysis)."""
+    try:
+        # For calls, find strike closest to target delta
+        if 'calc_delta' in calls_df.columns:
+            call_deltas = calls_df[calls_df['calc_delta'].notna()]
+            if not call_deltas.empty:
+                call_target = call_deltas.iloc[(call_deltas['calc_delta'] - target_delta).abs().argsort()[:1]]
+                call_strike = call_target['strike'].iloc[0] if not call_target.empty else None
+                call_delta = call_target['calc_delta'].iloc[0] if not call_target.empty else None
+            else:
+                call_strike, call_delta = None, None
+        else:
+            call_strike, call_delta = None, None
+        
+        # For puts, find strike closest to -target_delta (puts have negative delta)
+        if 'calc_delta' in puts_df.columns:
+            put_deltas = puts_df[puts_df['calc_delta'].notna()]
+            if not put_deltas.empty:
+                put_target = put_deltas.iloc[(put_deltas['calc_delta'] - (-target_delta)).abs().argsort()[:1]]
+                put_strike = put_target['strike'].iloc[0] if not put_target.empty else None
+                put_delta = put_target['calc_delta'].iloc[0] if not put_target.empty else None
+            else:
+                put_strike, put_delta = None, None
+        else:
+            put_strike, put_delta = None, None
+        
+        return {
+            'call_strike': call_strike,
+            'call_delta': call_delta,
+            'put_strike': put_strike,
+            'put_delta': put_delta,
+            'call_prob_itm': call_delta if call_delta else None,
+            'put_prob_itm': abs(put_delta) if put_delta else None
+        }
+    except Exception as e:
+        print(f"Error finding delta strikes: {e}")
+        return None
+
+def calculate_probability_distribution(calls_df, puts_df, S, expiry_date):
+    """Calculate probability distribution from option prices using risk-neutral probabilities."""
+    try:
+        # Get all strikes and sort them
+        all_strikes = sorted(pd.concat([calls_df['strike'], puts_df['strike']]).unique())
+        
+        probabilities = []
+        strikes_data = []
+        
+        today = datetime.today().date()
+        if isinstance(expiry_date, str):
+            expiry_date = datetime.strptime(expiry_date, "%Y-%m-%d").date()
+        
+        t_days = (expiry_date - today).days
+        t = max(t_days / 365.0, 1/365)  # At least 1 day
+        r = st.session_state.risk_free_rate
+        
+        for strike in all_strikes:
+            # Get call and put data for this strike
+            call_data = calls_df[calls_df['strike'] == strike]
+            put_data = puts_df[puts_df['strike'] == strike]
+            
+            # Prefer using implied volatility to calculate risk-neutral probabilities
+            iv = None
+            if not call_data.empty and 'impliedVolatility' in call_data.columns:
+                iv = call_data['impliedVolatility'].iloc[0]
+            elif not put_data.empty and 'impliedVolatility' in put_data.columns:
+                iv = put_data['impliedVolatility'].iloc[0]
+            
+            if iv and iv > 0:
+                # Calculate risk-neutral probability using Black-Scholes
+                try:
+                    d1 = (log(S / strike) + (r + 0.5 * iv**2) * t) / (iv * sqrt(t))
+                    d2 = d1 - iv * sqrt(t)
+                    
+                    # Risk-neutral probability of finishing above strike
+                    prob_above = norm.cdf(d2)  # Use d2 for risk-neutral probability
+                    
+                    probabilities.append(prob_above)
+                    strikes_data.append(strike)
+                except:
+                    continue
+            else:
+                # Fallback to delta if available
+                if not call_data.empty and 'calc_delta' in call_data.columns:
+                    delta = call_data['calc_delta'].iloc[0]
+                    prob_above = delta
+                elif not put_data.empty and 'calc_delta' in put_data.columns:
+                    delta = put_data['calc_delta'].iloc[0]
+                    prob_above = 1 + delta  # Put delta is negative
+                else:
+                    continue
+                
+                probabilities.append(prob_above)
+                strikes_data.append(strike)
+        
+        if not strikes_data:
+            return pd.DataFrame()
+            
+        # Sort by strike
+        prob_df = pd.DataFrame({
+            'strike': strikes_data,
+            'prob_above': probabilities,
+            'prob_below': [1 - p for p in probabilities]
+        }).sort_values('strike').reset_index(drop=True)
+        
+        return prob_df
+        
+    except Exception as e:
+        print(f"Error calculating probability distribution: {e}")
+        return pd.DataFrame()
+
+def create_implied_probabilities_chart(prob_df, S, prob_50_data, prob_70_data, implied_move_data):
+    """Create simplified implied probabilities visualization focusing on key levels."""
+    try:
+        # Get colors from session state
+        call_color = st.session_state.call_color
+        put_color = st.session_state.put_color
+
+        # Create two simple bar charts: one for probability levels and one for expected range
+        fig = make_subplots(
+            rows=1, cols=2,
+            subplot_titles=(
+                'Key Probability Levels',
+                'Expected Trading Range'
+            ),
+            specs=[[{"type": "bar"}, {"type": "bar"}]]
+        )
+        
+        # First subplot: Key Probability Levels
+        prob_levels = []
+        
+        # Add current price
+        prob_levels.append({
+            'level': 'Current Price',
+            'strike': S,
+            'type': 'neutral'
+        })
+        
+        # Add probability levels
+        if prob_50_data:
+            if prob_50_data['strike_above']:
+                prob_levels.append({
+                    'level': '50% Above',
+                    'strike': prob_50_data['strike_above'],
+                    'type': 'call'
+                })
+            if prob_50_data['strike_below']:
+                prob_levels.append({
+                    'level': '50% Below',
+                    'strike': prob_50_data['strike_below'],
+                    'type': 'put'
+                })
+        
+        if prob_70_data:
+            if prob_70_data['strike_above']:
+                prob_levels.append({
+                    'level': '70% Above',
+                    'strike': prob_70_data['strike_above'],
+                    'type': 'call'
+                })
+            if prob_70_data['strike_below']:
+                prob_levels.append({
+                    'level': '70% Below',
+                    'strike': prob_70_data['strike_below'],
+                    'type': 'put'
+                })
+        
+        if prob_levels:
+            levels_df = pd.DataFrame(prob_levels)
+            # Sort by strike price for better visualization
+            levels_df = levels_df.sort_values('strike')
+            
+            fig.add_trace(
+                go.Bar(
+                    x=levels_df['level'],
+                    y=levels_df['strike'],
+                    name='Probability Levels',
+                    marker_color=[
+                        call_color if row['type'] == 'call' 
+                        else put_color if row['type'] == 'put'
+                        else 'yellow' for _, row in levels_df.iterrows()
+                    ],
+                    text=[f"${v:.2f}" for v in levels_df['strike']],
+                    textposition='auto',
+                    textfont=dict(size=st.session_state.chart_text_size)
+                ),
+                row=1, col=1
+            )
+        
+        # Second subplot: Expected Trading Range
+        if implied_move_data:
+            range_data = [
+                {'level': 'Lower Range', 'value': implied_move_data['lower_range'], 'type': 'put'},
+                {'level': 'Current Price', 'value': S, 'type': 'neutral'},
+                {'level': 'Upper Range', 'value': implied_move_data['upper_range'], 'type': 'call'}
+            ]
+            range_df = pd.DataFrame(range_data)
+            
+            fig.add_trace(
+                go.Bar(
+                    x=range_df['level'],
+                    y=range_df['value'],
+                    name='Trading Range',
+                    marker_color=[
+                        put_color if row['type'] == 'put'
+                        else call_color if row['type'] == 'call'
+                        else 'yellow' for _, row in range_df.iterrows()
+                    ],
+                    text=[f"${v:.2f}" for v in range_df['value']],
+                    textposition='auto',
+                    textfont=dict(size=st.session_state.chart_text_size)
+                ),
+                row=1, col=2
+            )
+        
+        # Update layout
+        fig.update_layout(
+            height=500,  # Reduced height since we have fewer elements
+            title=dict(
+                text="Implied Probabilities Analysis",
+                x=0,
+                xanchor='left',
+                font=dict(size=st.session_state.chart_text_size + 8)
+            ),
+            showlegend=False,  # No need for legend
+            template="plotly_dark",
+            # Add more vertical space for labels
+            margin=dict(t=100, b=50)
+        )
+        
+        # Update subplot titles
+        for i in fig['layout']['annotations']:
+            i['font'] = dict(size=st.session_state.chart_text_size + 4)
+        
+        # Update axes
+        fig.update_xaxes(
+            title_text="Probability Level",
+            title_font=dict(size=st.session_state.chart_text_size),
+            tickfont=dict(size=st.session_state.chart_text_size),
+            row=1, col=1
+        )
+        fig.update_yaxes(
+            title_text="Strike Price ($)",
+            title_font=dict(size=st.session_state.chart_text_size),
+            tickfont=dict(size=st.session_state.chart_text_size),
+            row=1, col=1
+        )
+        fig.update_xaxes(
+            title_text="Price Level",
+            title_font=dict(size=st.session_state.chart_text_size),
+            tickfont=dict(size=st.session_state.chart_text_size),
+            row=1, col=2
+        )
+        fig.update_yaxes(
+            title_text="Price ($)",
+            title_font=dict(size=st.session_state.chart_text_size),
+            tickfont=dict(size=st.session_state.chart_text_size),
+            row=1, col=2
+        )
+        
+        return fig
+    except Exception as e:
+        print(f"Error creating implied probabilities chart: {e}")
+        return go.Figure()
+
 # Add error handling for fetching the last price to avoid KeyError.
 def get_last_price(stock):
     """Helper function to get the last price of the stock."""
@@ -2463,12 +2792,25 @@ def expiry_selector_fragment(page_name, available_dates):
         st.session_state[state_key] = []
     
     with container:
-        selected = st.multiselect(
-            "Select Expiration Date(s):",
-            options=available_dates,
-            default=st.session_state[state_key],
-            key=widget_key
-        )
+        # For implied probabilities page, use single select
+        if page_name == "Implied Probabilities":
+            # Get the first selected date if any, otherwise None
+            current_selection = st.session_state[state_key][0] if st.session_state[state_key] else None
+            
+            selected = [st.selectbox(
+                "Select Expiration Date:",
+                options=available_dates,
+                index=available_dates.index(current_selection) if current_selection in available_dates else 0,
+                key=widget_key
+            )]
+        else:
+            # For all other pages, use multiselect
+            selected = st.multiselect(
+                "Select Expiration Date(s):",
+                options=available_dates,
+                default=st.session_state[state_key],
+                key=widget_key
+            )
         
         # Check if selection changed
         if selected != st.session_state[f"{widget_key}_prev"]:
@@ -2840,13 +3182,14 @@ page_icons = {
     "Max Pain": "🎯",
     "GEX Surface": "🗻",
     "IV Surface": "🌐",
+    "Implied Probabilities": "🎲",
     "Analysis": "🔍",
     "Calculated Greeks": "🧮"
 }
 
 pages = ["Dashboard", "OI & Volume", "Gamma Exposure", "Delta Exposure", 
           "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Delta-Adjusted Value Index", "Max Pain", "GEX Surface", "IV Surface",
-          "Analysis", "Calculated Greeks"]
+          "Implied Probabilities", "Analysis", "Calculated Greeks"]
 
 # Create page options with icons
 page_options = [f"{page_icons[page]} {page}" for page in pages]
@@ -2874,7 +3217,8 @@ if st.session_state.previous_page != new_page:
         'charm_expiry_multi',
         'speed_expiry_multi',
         'vomma_expiry_multi',
-        'max_pain_expiry_multi'
+        'max_pain_expiry_multi',
+        'implied_probabilities_expiry_multi'
     ]
     for key in expiry_selection_keys:
         if key in st.session_state:
@@ -6745,6 +7089,220 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
 
                 fig = create_davi_chart(all_calls, all_puts, S)
                 st.plotly_chart(fig, use_container_width=True)
+
+elif st.session_state.current_page == "Implied Probabilities":
+    main_container = st.container()
+    with main_container:
+        st.empty()  # Clear previous content
+        
+        # Header
+        st.title("🎲 Implied Probabilities Analysis")
+        st.markdown("""
+        **Analyze option-implied probabilities and expected moves based on market pricing.**
+        
+        This page calculates:
+        - **50% and 70% probability levels** - Strikes where there's exactly a 50% or 70% chance of being above/below
+        - **Implied move** - Expected price range based on straddle pricing
+        - **Probability distribution** - Market-implied likelihood of price levels
+        - **Trading ranges** - Expected breakout levels and support/resistance zones
+        """)
+        
+        col1, col2 = st.columns([0.94, 0.06])
+        with col1:
+            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="implied_prob_ticker")
+        with col2:
+            st.write("")  # Add some spacing
+            st.write("")  # Add some spacing
+            if st.button("🔄", key="refresh_button_implied_prob"):
+                st.cache_data.clear()  # Clear the cache before rerunning
+                st.rerun()
+        
+        ticker = format_ticker(user_ticker)
+        
+        # Clear cache if ticker changes
+        if ticker != saved_ticker:
+            st.cache_data.clear()
+            save_ticker(ticker)  # Save the ticker
+        
+        if ticker:
+            # Fetch price once
+            S = get_current_price(ticker)
+            if S is None:
+                st.error("Could not fetch current price.")
+                st.stop()
+
+            stock = yf.Ticker(ticker)
+            available_dates = stock.options
+            if not available_dates:
+                st.warning("No options data available for this ticker.")
+            else:
+                selected_expiry_dates, selector_container = expiry_selector_fragment(st.session_state.current_page, available_dates)
+                st.session_state.expiry_selector_container = selector_container
+                
+                if not selected_expiry_dates:
+                    st.info("Please select at least one expiration date.")
+                    st.stop()
+                
+                # For implied probabilities, we typically focus on the nearest expiry
+                # But allow multiple for comparison
+                all_calls, all_puts = fetch_and_process_multiple_dates(
+                    ticker, 
+                    selected_expiry_dates,
+                    lambda t, d: compute_greeks_and_charts(t, d, "implied_prob", S)[:2]  # Only take calls and puts
+                )
+                
+                if all_calls.empty and all_puts.empty:
+                    st.warning("No options data available for the selected dates.")
+                    st.stop()
+                
+                # Create tabs for different analyses
+                tab1, tab2, tab3, tab4 = st.tabs(["📊 Overview", "🎯 Delta Levels", "📈 Probability Charts", "📋 Detailed Analysis"])
+                
+                with tab1:
+                    st.subheader("Key Probability Metrics")
+                    
+                    # Calculate key metrics for the first (nearest) expiry
+                    nearest_expiry = selected_expiry_dates[0]
+                    nearest_calls = all_calls[all_calls['extracted_expiry'] == pd.to_datetime(nearest_expiry).date()]
+                    nearest_puts = all_puts[all_puts['extracted_expiry'] == pd.to_datetime(nearest_expiry).date()]
+                    
+                    # Calculate implied move
+                    implied_move_data = calculate_implied_move(S, nearest_calls, nearest_puts)
+                    
+                    # Calculate 50% and 70% probability strikes  
+                    prob_50_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.5)
+                    prob_70_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.7)
+                    
+                    # Display metrics in columns
+                    col1, col2, col3 = st.columns(3)
+                    
+                    with col1:
+                        st.metric("Current Price", f"${S:.2f}")
+                        if implied_move_data:
+                            st.metric("Implied Move", f"${implied_move_data['implied_move_dollars']:.2f}", 
+                                     f"({implied_move_data['implied_move_pct']:.1f}%)")
+                    
+                    with col2:
+                        if prob_50_data and prob_50_data['strike_above']:
+                            st.metric("50% Prob Above", f"${prob_50_data['strike_above']:.2f}", 
+                                     f"Actual: {prob_50_data['prob_above']*100:.1f}% above")
+                        if prob_50_data and prob_50_data['strike_below']:
+                            st.metric("50% Prob Below", f"${prob_50_data['strike_below']:.2f}", 
+                                     f"Actual: {prob_50_data['prob_below']*100:.1f}% below")
+                    
+                    with col3:
+                        if prob_70_data and prob_70_data['strike_above']:
+                            st.metric("70% Prob Above", f"${prob_70_data['strike_above']:.2f}", 
+                                     f"Actual: {prob_70_data['prob_above']*100:.1f}% above")
+                        if prob_70_data and prob_70_data['strike_below']:
+                            st.metric("70% Prob Below", f"${prob_70_data['strike_below']:.2f}", 
+                                     f"Actual: {prob_70_data['prob_below']*100:.1f}% below")
+                    
+                    # Expected trading range
+                    if implied_move_data:
+                        st.subheader("Expected Trading Range")
+                        st.write(f"**Lower Range:** ${implied_move_data['lower_range']:.2f}")
+                        st.write(f"**Upper Range:** ${implied_move_data['upper_range']:.2f}")
+                        st.write(f"**Range Width:** ${implied_move_data['upper_range'] - implied_move_data['lower_range']:.2f}")
+                
+                with tab2:
+                    st.subheader("Probability Levels Analysis")
+                    
+                    # Create a detailed table of probability levels
+                    prob_levels = [0.10, 0.16, 0.20, 0.25, 0.30, 0.40, 0.50, 0.60, 0.70, 0.75, 0.80, 0.84, 0.90]
+                    prob_data = []
+                    
+                    for prob in prob_levels:
+                        prob_info = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, prob)
+                        if prob_info:
+                            prob_data.append({
+                                'Probability Level': f"{prob*100:.0f}%",
+                                'Strike Above': f"${prob_info['strike_above']:.2f}" if prob_info['strike_above'] else "N/A",
+                                'Strike Below': f"${prob_info['strike_below']:.2f}" if prob_info['strike_below'] else "N/A",
+                                'Actual Prob Above': f"{prob_info['prob_above']*100:.1f}%" if prob_info['prob_above'] else "N/A",
+                                'Actual Prob Below': f"{prob_info['prob_below']*100:.1f}%" if prob_info['prob_below'] else "N/A"
+                            })
+                    
+                    if prob_data:
+                        prob_df_display = pd.DataFrame(prob_data)
+                        st.dataframe(prob_df_display, use_container_width=True)
+                    
+                    # Explanatory text
+                    st.markdown("""
+                    **Understanding Probability Levels:**
+                    - **50% Probability**: Even odds - coin flip probability of being above/below
+                    - **70% Probability**: High confidence levels for directional moves
+                    - **16% Probability**: Approximately one standard deviation (84% chance of staying within range)
+                    - **84% Probability**: Very high confidence levels, approximately one standard deviation
+                    - **90% Probability**: Extreme confidence levels for range-bound strategies
+                    
+                    **Key Insight:** The wider the gap between "Strike Above" and "Strike Below" for the same probability, 
+                    the higher the implied volatility and expected price movement.
+                    """)
+                
+                with tab3:
+                    st.subheader("Probability Visualization")
+                    
+                    # Calculate probability distribution
+                    prob_df = calculate_probability_distribution(nearest_calls, nearest_puts, S, nearest_expiry)
+                    
+                    # Create comprehensive chart
+                    if not prob_df.empty:
+                        fig = create_implied_probabilities_chart(prob_df, S, prob_50_data, prob_70_data, implied_move_data)
+                        st.plotly_chart(fig, use_container_width=True)
+                    else:
+                        st.warning("Could not calculate probability distribution.")
+                
+                with tab4:
+                    st.subheader("Detailed Probability Analysis")
+                    
+                    # Show probability distribution table
+                    if not prob_df.empty:
+                        # Add additional calculations
+                        prob_df['distance_from_current'] = abs(prob_df['strike'] - S)
+                        prob_df['prob_above_pct'] = prob_df['prob_above'] * 100
+                        prob_df['prob_below_pct'] = prob_df['prob_below'] * 100
+                        
+                        # Format for display
+                        display_df = prob_df[['strike', 'prob_above_pct', 'prob_below_pct', 'distance_from_current']].copy()
+                        display_df.columns = ['Strike', 'Prob Above (%)', 'Prob Below (%)', 'Distance from Current']
+                        display_df['Strike'] = display_df['Strike'].apply(lambda x: f"${x:.2f}")
+                        display_df['Prob Above (%)'] = display_df['Prob Above (%)'].apply(lambda x: f"{x:.1f}%")
+                        display_df['Prob Below (%)'] = display_df['Prob Below (%)'].apply(lambda x: f"{x:.1f}%")
+                        display_df['Distance from Current'] = display_df['Distance from Current'].apply(lambda x: f"${x:.2f}")
+                        
+                        st.dataframe(display_df, use_container_width=True)
+                    
+                    # Additional metrics
+                    if implied_move_data:
+                        st.subheader("Implied Move Analysis")
+                        
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            st.write("**ATM Straddle Analysis:**")
+                            st.write(f"ATM Strike: ${implied_move_data['atm_strike']:.2f}")
+                            st.write(f"Straddle Price: ${implied_move_data['straddle_price']:.2f}")
+                            st.write(f"Implied Move: {implied_move_data['implied_move_pct']:.2f}%")
+                        
+                        with col2:
+                            st.write("**Breakeven Levels:**")
+                            st.write(f"Upper Breakeven: ${implied_move_data['upper_range']:.2f}")
+                            st.write(f"Lower Breakeven: ${implied_move_data['lower_range']:.2f}")
+                            
+                            # Calculate probability of staying within range
+                            if not prob_df.empty:
+                                within_range = prob_df[
+                                    (prob_df['strike'] >= implied_move_data['lower_range']) & 
+                                    (prob_df['strike'] <= implied_move_data['upper_range'])
+                                ]
+                                if not within_range.empty:
+                                    prob_within = within_range['prob_above'].iloc[-1] - within_range['prob_above'].iloc[0]
+                                    st.write(f"Prob within range: {prob_within*100:.1f}%")
+                    
+                    st.markdown("""
+                    **Note:** Probabilities are derived from option delta values and implied volatilities. 
+                    These represent the market's implied view of future price movements, not predictions.
+                    """)
 
 # -----------------------------------------
 # Auto-refresh
