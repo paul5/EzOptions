@@ -2178,25 +2178,43 @@ def find_probability_strikes(calls_df, puts_df, S, expiry_date, target_prob=0.5)
         if prob_df.empty:
             return None
         
-        # Find strike closest to target probability above
-        # This finds the strike where prob_above = target_prob
-        prob_above_target = prob_df.iloc[(prob_df['prob_above'] - target_prob).abs().argsort()[:1]]
-        strike_above = prob_above_target['strike'].iloc[0] if not prob_above_target.empty else None
-        actual_prob_above = prob_above_target['prob_above'].iloc[0] if not prob_above_target.empty else None
+        # For 50% probability: find the strike where prob_above ≈ 0.5 (median)
+        # For other probabilities: find strikes where prob_above = target_prob and prob_above = 1-target_prob
         
-        # Find strike closest to target probability below
-        # This finds the strike where prob_below = target_prob (which means prob_above = 1 - target_prob)
-        prob_below_target = prob_df.iloc[(prob_df['prob_below'] - target_prob).abs().argsort()[:1]]
-        strike_below = prob_below_target['strike'].iloc[0] if not prob_below_target.empty else None
-        actual_prob_below = prob_below_target['prob_below'].iloc[0] if not prob_below_target.empty else None
-        
-        return {
-            'strike_above': strike_above,  # Strike with target_prob chance of being above
-            'prob_above': actual_prob_above,
-            'strike_below': strike_below,  # Strike with target_prob chance of being below  
-            'prob_below': actual_prob_below,
-            'target_probability': target_prob
-        }
+        if target_prob == 0.5:
+            # Special case for 50%: find the median strike (where prob_above ≈ 0.5)
+            median_target = prob_df.iloc[(prob_df['prob_above'] - 0.5).abs().argsort()[:1]]
+            median_strike = median_target['strike'].iloc[0] if not median_target.empty else None
+            median_prob_above = median_target['prob_above'].iloc[0] if not median_target.empty else None
+            median_prob_below = 1 - median_prob_above if median_prob_above is not None else None
+            
+            return {
+                'strike_above': median_strike,  # Strike with ~50% chance of being above
+                'prob_above': median_prob_above,
+                'strike_below': median_strike,  # Same strike for 50% below (complement)
+                'prob_below': median_prob_below,
+                'target_probability': target_prob
+            }
+        else:
+            # For non-50% probabilities: find upper and lower confidence bounds
+            # Strike where prob_above = target_prob (lower bound of confidence interval)
+            prob_above_target = prob_df.iloc[(prob_df['prob_above'] - target_prob).abs().argsort()[:1]]
+            strike_above = prob_above_target['strike'].iloc[0] if not prob_above_target.empty else None
+            actual_prob_above = prob_above_target['prob_above'].iloc[0] if not prob_above_target.empty else None
+            
+            # Strike where prob_above = 1-target_prob (upper bound of confidence interval)
+            complement_prob = 1 - target_prob
+            prob_below_target = prob_df.iloc[(prob_df['prob_above'] - complement_prob).abs().argsort()[:1]]
+            strike_below = prob_below_target['strike'].iloc[0] if not prob_below_target.empty else None
+            actual_prob_below = 1 - prob_below_target['prob_above'].iloc[0] if not prob_below_target.empty else None
+            
+            return {
+                'strike_above': strike_above,  # Strike with target_prob chance of being above
+                'prob_above': actual_prob_above,
+                'strike_below': strike_below,  # Strike with target_prob chance of being below  
+                'prob_below': actual_prob_below,
+                'target_probability': target_prob
+            }
     except Exception as e:
         print(f"Error finding probability strikes: {e}")
         return None
@@ -7184,11 +7202,16 @@ elif st.session_state.current_page == "Implied Probabilities":
                     
                     with col2:
                         if prob_50_data and prob_50_data['strike_above']:
-                            st.metric("50% Prob Above", f"${prob_50_data['strike_above']:.2f}", 
-                                     f"Actual: {prob_50_data['prob_above']*100:.1f}% above")
-                        if prob_50_data and prob_50_data['strike_below']:
-                            st.metric("50% Prob Below", f"${prob_50_data['strike_below']:.2f}", 
-                                     f"Actual: {prob_50_data['prob_below']*100:.1f}% below")
+                            # For 50% probability, both above and below refer to the same median strike
+                            if prob_50_data['strike_above'] == prob_50_data['strike_below']:
+                                st.metric("50% Probability Level", f"${prob_50_data['strike_above']:.2f}", 
+                                         f"Median: {prob_50_data['prob_above']*100:.1f}% above, {prob_50_data['prob_below']*100:.1f}% below")
+                            else:
+                                st.metric("50% Prob Above", f"${prob_50_data['strike_above']:.2f}", 
+                                         f"Actual: {prob_50_data['prob_above']*100:.1f}% above")
+                                if prob_50_data and prob_50_data['strike_below']:
+                                    st.metric("50% Prob Below", f"${prob_50_data['strike_below']:.2f}", 
+                                             f"Actual: {prob_50_data['prob_below']*100:.1f}% below")
                     
                     with col3:
                         if prob_70_data and prob_70_data['strike_above']:
@@ -7198,12 +7221,105 @@ elif st.session_state.current_page == "Implied Probabilities":
                             st.metric("70% Prob Below", f"${prob_70_data['strike_below']:.2f}", 
                                      f"Actual: {prob_70_data['prob_below']*100:.1f}% below")
                     
-                    # Expected trading range
+                    # Expected trading range with better formatting
                     if implied_move_data:
-                        st.subheader("Expected Trading Range")
-                        st.write(f"**Lower Range:** ${implied_move_data['lower_range']:.2f}")
-                        st.write(f"**Upper Range:** ${implied_move_data['upper_range']:.2f}")
-                        st.write(f"**Range Width:** ${implied_move_data['upper_range'] - implied_move_data['lower_range']:.2f}")
+                        st.subheader("📊 Expected Trading Range")
+                        
+                        range_col1, range_col2, range_col3 = st.columns(3)
+                        with range_col1:
+                            st.metric("Lower Range", f"${implied_move_data['lower_range']:.2f}")
+                        with range_col2:
+                            st.metric("Upper Range", f"${implied_move_data['upper_range']:.2f}")
+                        with range_col3:
+                            range_width = implied_move_data['upper_range'] - implied_move_data['lower_range']
+                            range_pct = (range_width / S) * 100
+                            st.metric("Range Width", f"${range_width:.2f}", f"({range_pct:.2f}%)")
+                    
+                    # Probability levels relative to current price with better formatting
+                    st.subheader("🎯 Price Targets & Movement Required")
+                    
+                    # Create tabs for different probability levels
+                    prob_tab1, prob_tab2 = st.tabs(["50% Probability (Median)", "70% Confidence Bounds"])
+                    
+                    with prob_tab1:
+                        if prob_50_data and prob_50_data['strike_above']:
+                            strike_50 = prob_50_data['strike_above']
+                            distance_50 = strike_50 - S
+                            distance_pct_50 = (distance_50 / S) * 100
+                            
+                            col1, col2, col3 = st.columns(3)
+                            
+                            with col1:
+                                st.metric("50% Probability Level", f"${strike_50:.2f}")
+                            
+                            with col2:
+                                if abs(distance_50) < 0.01:
+                                    st.metric("Distance", "At Current Price", "📍")
+                                else:
+                                    direction = "⬆️" if distance_50 > 0 else "⬇️"
+                                    st.metric("Distance", f"${abs(distance_50):.2f}", f"{direction} {abs(distance_pct_50):.2f}%")
+                            
+                            with col3:
+                                if abs(distance_50) >= 0.01:
+                                    direction_text = "UP" if distance_50 > 0 else "DOWN"
+                                    st.metric("Movement Needed", f"{abs(distance_pct_50):.2f}%", f"{direction_text}")
+                                else:
+                                    st.metric("Movement Needed", "None", "At target")
+                            
+                            # Explanation
+                            st.info(f"💡 **50% Probability Level**: This is the median price level where there's an equal chance (50/50) of the stock finishing above or below at expiration.")
+                    
+                    with prob_tab2:
+                        if prob_70_data and prob_70_data['strike_above'] and prob_70_data['strike_below']:
+                            strike_70_above = prob_70_data['strike_above']
+                            strike_70_below = prob_70_data['strike_below']
+                            
+                            # Fix the ordering issue - ensure above > below
+                            if strike_70_above < strike_70_below:
+                                strike_70_above, strike_70_below = strike_70_below, strike_70_above
+                            
+                            distance_above = strike_70_above - S
+                            distance_below = strike_70_below - S
+                            distance_pct_above = (distance_above / S) * 100
+                            distance_pct_below = (distance_below / S) * 100
+                            
+                            # Upper and lower bounds
+                            bound_col1, bound_col2 = st.columns(2)
+                            
+                            with bound_col1:
+                                st.markdown("**🔺 Upper 70% Bound**")
+                                st.metric("Strike Price", f"${strike_70_above:.2f}")
+                                st.metric("Distance", f"${distance_above:.2f}", f"⬆️ {distance_pct_above:+.2f}%")
+                                
+                            with bound_col2:
+                                st.markdown("**🔻 Lower 70% Bound**")
+                                st.metric("Strike Price", f"${strike_70_below:.2f}")
+                                st.metric("Distance", f"${abs(distance_below):.2f}", f"⬇️ {distance_pct_below:+.2f}%")
+                            
+                            # Range analysis
+                            st.markdown("**📏 Range Analysis**")
+                            range_col1, range_col2, range_col3 = st.columns(3)
+                            
+                            with range_col1:
+                                range_width = strike_70_above - strike_70_below
+                                st.metric("Total Range", f"${range_width:.2f}")
+                            
+                            with range_col2:
+                                range_pct = (range_width / S) * 100
+                                st.metric("Range %", f"{range_pct:.2f}%")
+                            
+                            with range_col3:
+                                # Calculate if current price is within the range
+                                if strike_70_below <= S <= strike_70_above:
+                                    position = "Within Range ✅"
+                                elif S > strike_70_above:
+                                    position = "Above Range ⬆️"
+                                else:
+                                    position = "Below Range ⬇️"
+                                st.metric("Current Position", position)
+                            
+                            # Explanation
+                            st.info(f"💡 **70% Confidence Bounds**: There's a 70% probability the stock will finish between ${strike_70_below:.2f} and ${strike_70_above:.2f} at expiration.")
                 
                 with tab2:
                     st.subheader("Probability Levels Analysis")
