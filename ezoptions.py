@@ -2775,6 +2775,7 @@ def reset_session_state():
         'charm_expiry_multi',
         'speed_expiry_multi',
         'vomma_expiry_multi',
+        'notional_exposure_expiry_multi',
         'max_pain_expiry_multi'
     ]
     for key in expiry_selection_keys:
@@ -3188,6 +3189,7 @@ page_icons = {
     "Charm Exposure": "⚡",
     "Speed Exposure": "🚀",
     "Vomma Exposure": "💫",
+    "Exposure by Notional Value": "💰",
     "Delta-Adjusted Value Index": "📉",
     "Max Pain": "🎯",
     "GEX Surface": "🗻",
@@ -3198,7 +3200,7 @@ page_icons = {
 }
 
 pages = ["Dashboard", "OI & Volume", "Gamma Exposure", "Delta Exposure", 
-          "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Delta-Adjusted Value Index", "Max Pain", "GEX Surface", "IV Surface",
+          "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Exposure by Notional Value", "Delta-Adjusted Value Index", "Max Pain", "GEX Surface", "IV Surface",
           "Implied Probabilities", "Analysis", "Calculated Greeks"]
 
 # Create page options with icons
@@ -3227,6 +3229,7 @@ if st.session_state.previous_page != new_page:
         'charm_expiry_multi',
         'speed_expiry_multi',
         'vomma_expiry_multi',
+        'notional_exposure_expiry_multi',
         'max_pain_expiry_multi',
         'implied_probabilities_expiry_multi'
     ]
@@ -5511,6 +5514,145 @@ elif st.session_state.current_page == "Vomma Exposure":
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
                 st.plotly_chart(fig_bar, use_container_width=True)
+
+elif st.session_state.current_page == "Exposure by Notional Value":
+    exposure_container = st.container()
+    with exposure_container:
+        st.empty()  # Clear previous content
+        page_name = "notional"  # Use consistent page name for compute_greeks_and_charts
+        col1, col2 = st.columns([0.94, 0.06])
+        with col1:
+            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="notional_exposure_ticker")
+        with col2:
+            st.write("")  # Add some spacing
+            st.write("")  # Add some spacing
+            if st.button("🔄", key="refresh_button_notional"):
+                st.cache_data.clear()  # Clear the cache before rerunning
+                st.rerun()
+        ticker = format_ticker(user_ticker)
+        
+        # Clear cache if ticker changes
+        if ticker != saved_ticker:
+            st.cache_data.clear()
+            save_ticker(ticker)  # Save the ticker
+        
+        if ticker:
+            # Fetch price once
+            S = get_current_price(ticker)
+            if S is None:
+                st.error("Could not fetch current price.")
+                st.stop()
+
+            stock = yf.Ticker(ticker)
+            available_dates = stock.options
+            if not available_dates:
+                st.warning("No options data available for this ticker.")
+            else:
+                selected_expiry_dates, selector_container = expiry_selector_fragment(st.session_state.current_page, available_dates)
+                st.session_state.expiry_selector_container = selector_container
+                
+                if not selected_expiry_dates:
+                    st.warning("Please select at least one expiration date.")
+                    st.stop()
+                
+                all_calls, all_puts = fetch_and_process_multiple_dates(
+                    ticker, 
+                    selected_expiry_dates,
+                    lambda t, d: compute_greeks_and_charts(t, d, page_name, S)[:2]  # Only take calls and puts
+                )
+                
+                if all_calls.empty and all_puts.empty:
+                    st.warning("No options data available for the selected dates.")
+                    st.stop()
+                
+                # Calculate notional value exposure from raw greek values
+                def calculate_notional_exposure(df, exposure_col):
+                    """Calculate notional value exposure from raw greek values × contract price × contract size"""
+                    if exposure_col not in df.columns:
+                        return df
+                    
+                    # Use lastPrice if available, otherwise use ask price
+                    price_col = 'lastPrice' if 'lastPrice' in df.columns else 'ask'
+                    
+                    # Calculate notional exposure from raw greek values (not the already-scaled exposure values)
+                    # This avoids double-scaling issues
+                    if exposure_col == "GEX":
+                        # Notional = Gamma × OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * df['openInterest'] * 100 * df[price_col]
+                    elif exposure_col == "VEX":
+                        # Notional = Vanna × OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_vanna'] * df['openInterest'] * 100 * df[price_col]
+                    elif exposure_col == "DEX":
+                        # Notional = Delta × OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_delta'] * df['openInterest'] * 100 * df[price_col]
+                    elif exposure_col == "Charm":
+                        # Notional = Charm × OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_charm'] * df['openInterest'] * 100 * df[price_col]
+                    elif exposure_col == "Speed":
+                        # Notional = Speed × OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_speed'] * df['openInterest'] * 100 * df[price_col]
+                    elif exposure_col == "Vomma":
+                        # Notional = Vomma × OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_vomma'] * df['openInterest'] * 100 * df[price_col]
+                    
+                    return df
+                
+                # Calculate notional exposure for all exposure types
+                for exposure_type in ["GEX", "VEX", "DEX", "Charm", "Speed", "Vomma"]:
+                    if f'calc_{exposure_type.lower()}' in all_calls.columns or exposure_type in all_calls.columns:
+                        all_calls = calculate_notional_exposure(all_calls, exposure_type)
+                        all_puts = calculate_notional_exposure(all_puts, exposure_type)
+                
+                # Create tabs for different exposure types
+                tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Gamma (GEX)", "Vanna (VEX)", "Delta (DEX)", "Charm", "Speed", "Vomma"])
+                
+                with tab1:
+                    if "GEX_notional" in all_calls.columns:
+                        title = f"GEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
+                        fig_gex = create_exposure_bar_chart(all_calls, all_puts, "GEX_notional", title, S)
+                        st.plotly_chart(fig_gex, use_container_width=True)
+                    else:
+                        st.warning("GEX data not available.")
+                
+                with tab2:
+                    if "VEX_notional" in all_calls.columns:
+                        title = f"VEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
+                        fig_vex = create_exposure_bar_chart(all_calls, all_puts, "VEX_notional", title, S)
+                        st.plotly_chart(fig_vex, use_container_width=True)
+                    else:
+                        st.warning("VEX data not available.")
+                
+                with tab3:
+                    if "DEX_notional" in all_calls.columns:
+                        title = f"DEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
+                        fig_dex = create_exposure_bar_chart(all_calls, all_puts, "DEX_notional", title, S)
+                        st.plotly_chart(fig_dex, use_container_width=True)
+                    else:
+                        st.warning("DEX data not available.")
+                
+                with tab4:
+                    if "Charm_notional" in all_calls.columns:
+                        title = f"Charm Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
+                        fig_charm = create_exposure_bar_chart(all_calls, all_puts, "Charm_notional", title, S)
+                        st.plotly_chart(fig_charm, use_container_width=True)
+                    else:
+                        st.warning("Charm data not available.")
+                
+                with tab5:
+                    if "Speed_notional" in all_calls.columns:
+                        title = f"Speed Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
+                        fig_speed = create_exposure_bar_chart(all_calls, all_puts, "Speed_notional", title, S)
+                        st.plotly_chart(fig_speed, use_container_width=True)
+                    else:
+                        st.warning("Speed data not available.")
+                
+                with tab6:
+                    if "Vomma_notional" in all_calls.columns:
+                        title = f"Vomma Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
+                        fig_vomma = create_exposure_bar_chart(all_calls, all_puts, "Vomma_notional", title, S)
+                        st.plotly_chart(fig_vomma, use_container_width=True)
+                    else:
+                        st.warning("Vomma data not available.")
 
 elif st.session_state.current_page == "Calculated Greeks":
     main_container = st.container()
