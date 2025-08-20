@@ -3678,7 +3678,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     puts_filtered = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
 
     # Calculate Net Exposure based on type using filtered data
-    if exposure_type == 'GEX':
+    if exposure_type == 'GEX' or exposure_type == 'GEX_notional':
         if st.session_state.gex_type == 'Net':
             net_exposure = calls_filtered.groupby('strike')[exposure_type].sum() - puts_filtered.groupby('strike')[exposure_type].sum()
         else:  # Absolute
