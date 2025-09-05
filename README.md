@@ -4,9 +4,6 @@
   <a href="https://github.com/EazyDuz1t/EzOptions">
     <img src="https://img.shields.io/github/stars/EazyDuz1t/EzOptions" alt="GitHub Repo stars"/>
   </a>
-  <p>
-    <a href="https://discord.gg/QaDqgzrfz7">Join our Discord community!</a>
-  </p>
 </div>
 
 <div align="center">
