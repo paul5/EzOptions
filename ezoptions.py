@@ -2738,7 +2738,8 @@ def reset_session_state():
         'bollinger_std',
         'rsi_period',
         'fibonacci_levels',
-        'vwap_enabled'
+        'vwap_enabled',
+        'use_volume_for_greeks'
     }
     
     # Initialize visibility settings if they don't exist
@@ -3240,6 +3241,23 @@ if st.session_state.previous_page != new_page:
 # Add after st.sidebar.title("Navigation")
 def chart_settings():
     with st.sidebar.expander("Chart Settings", expanded=False):
+        # Greek Exposure Settings - FIRST SETTING
+        st.write("Greek Exposure Settings:")
+        
+        # Initialize volume/OI preference setting
+        if 'use_volume_for_greeks' not in st.session_state:
+            st.session_state.use_volume_for_greeks = False  # Default to Open Interest
+        
+        use_volume = st.checkbox(
+            "Use Volume instead of Open Interest for Greek exposures",
+            value=st.session_state.use_volume_for_greeks,
+            help="When enabled, Greek exposures (Gamma, Vanna, Delta, Charm, Speed, Vomma) will use Volume instead of Open Interest in calculations"
+        )
+        
+        # Update session state when the setting changes
+        if use_volume != st.session_state.use_volume_for_greeks:
+            st.session_state.use_volume_for_greeks = use_volume
+
         st.write("Colors:")
         new_call_color = st.color_picker("Calls", st.session_state.call_color)
         new_put_color = st.color_picker("Puts", st.session_state.put_color)
@@ -3623,30 +3641,33 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     calls = calls.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"])
     puts = puts.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"])
 
+    # Determine which metric to use based on settings
+    volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
+
     # Correct exposure formulas with proper scaling
-    # GEX = Gamma * OI * Contract Size * Spot Price^2 * 0.01 (for 1% move sensitivity)
-    calls["GEX"] = calls["calc_gamma"] * calls["openInterest"] * 100 * S * S * 0.01
-    puts["GEX"] = puts["calc_gamma"] * puts["openInterest"] * 100 * S * S * 0.01
+    # GEX = Gamma * Volume/OI * Contract Size * Spot Price^2 * 0.01 (for 1% move sensitivity)
+    calls["GEX"] = calls["calc_gamma"] * calls[volume_metric] * 100 * S * S * 0.01
+    puts["GEX"] = puts["calc_gamma"] * puts[volume_metric] * 100 * S * S * 0.01
     
-    # VEX = Vanna * OI * Contract Size * Spot Price * 0.01 (change in dollar delta per 1% vol change)
-    calls["VEX"] = calls["calc_vanna"] * calls["openInterest"] * 100 * S * 0.01
-    puts["VEX"] = puts["calc_vanna"] * puts["openInterest"] * 100 * S * 0.01
+    # VEX = Vanna * Volume/OI * Contract Size * Spot Price * 0.01 (change in dollar delta per 1% vol change)
+    calls["VEX"] = calls["calc_vanna"] * calls[volume_metric] * 100 * S * 0.01
+    puts["VEX"] = puts["calc_vanna"] * puts[volume_metric] * 100 * S * 0.01
     
-    # DEX = Delta * OI * Contract Size * Spot Price
-    calls["DEX"] = calls["calc_delta"] * calls["openInterest"] * 100 * S
-    puts["DEX"] = puts["calc_delta"] * puts["openInterest"] * 100 * S
+    # DEX = Delta * Volume/OI * Contract Size * Spot Price
+    calls["DEX"] = calls["calc_delta"] * calls[volume_metric] * 100 * S
+    puts["DEX"] = puts["calc_delta"] * puts[volume_metric] * 100 * S
     
-    # Charm = Charm * OI * Contract Size * Spot Price / 365 (change in dollar delta per day)
-    calls["Charm"] = calls["calc_charm"] * calls["openInterest"] * 100 * S / 365.0
-    puts["Charm"] = puts["calc_charm"] * puts["openInterest"] * 100 * S / 365.0
+    # Charm = Charm * Volume/OI * Contract Size * Spot Price / 365 (change in dollar delta per day)
+    calls["Charm"] = calls["calc_charm"] * calls[volume_metric] * 100 * S / 365.0
+    puts["Charm"] = puts["calc_charm"] * puts[volume_metric] * 100 * S / 365.0
     
     # Speed = Total portfolio speed (dGamma/dSpot)
-    calls["Speed"] = calls["calc_speed"] * calls["openInterest"] * 100
-    puts["Speed"] = puts["calc_speed"] * puts["openInterest"] * 100
+    calls["Speed"] = calls["calc_speed"] * calls[volume_metric] * 100
+    puts["Speed"] = puts["calc_speed"] * puts[volume_metric] * 100
     
-    # Vomma = Vomma * OI * Contract Size * 0.01 (change in dollar vega per 1% vol change)
-    calls["Vomma"] = calls["calc_vomma"] * calls["openInterest"] * 100 * 0.01
-    puts["Vomma"] = puts["calc_vomma"] * puts["openInterest"] * 100 * 0.01
+    # Vomma = Vomma * Volume/OI * Contract Size * 0.01 (change in dollar vega per 1% vol change)
+    calls["Vomma"] = calls["calc_vomma"] * calls[volume_metric] * 100 * 0.01
+    puts["Vomma"] = puts["calc_vomma"] * puts[volume_metric] * 100 * 0.01
 
     return calls, puts, S, t, selected_expiry, today
 
@@ -3698,9 +3719,12 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     total_call_value = calls_df[exposure_type].sum()
     total_put_value = puts_df[exposure_type].sum()
 
-    # Update title to include total Greek values with colored values using HTML
+    # Get the metric being used and add it to the title
+    metric_name = "Volume" if st.session_state.get('use_volume_for_greeks', False) else "Open Interest"
+    
+    # Update title to include total Greek values with colored values using HTML and metric info
     title_with_totals = (
-        f"{title}     "
+        f"{title} ({metric_name})     "
         f"<span style='color: {st.session_state.call_color}'>{total_call_value:,.0f}</span> | "
         f"<span style='color: {st.session_state.put_color}'>{total_put_value:,.0f}</span>"
     )
@@ -3899,7 +3923,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 font=dict(size=st.session_state.chart_text_size + 8)  # Title slightly larger
             ),
             xaxis_title=dict(
-                text=title,
+                text=f"{title} ({metric_name})",
                 font=dict(size=st.session_state.chart_text_size)
             ),
             yaxis_title=dict(
@@ -3935,7 +3959,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 font=dict(size=st.session_state.chart_text_size)
             ),
             yaxis_title=dict(
-                text=title,
+                text=f"{title} ({metric_name})",
                 font=dict(size=st.session_state.chart_text_size)
             ),
             legend=dict(
@@ -5574,26 +5598,29 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     # Use lastPrice if available, otherwise use ask price
                     price_col = 'lastPrice' if 'lastPrice' in df.columns else 'ask'
                     
+                    # Determine which volume metric to use
+                    volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
+                    
                     # Calculate notional exposure from raw greek values (not the already-scaled exposure values)
                     # This avoids double-scaling issues
                     if exposure_col == "GEX":
-                        # Notional = Gamma × OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * df['openInterest'] * 100 * df[price_col]
+                        # Notional = Gamma × Volume/OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * df[volume_metric] * 100 * df[price_col]
                     elif exposure_col == "VEX":
-                        # Notional = Vanna × OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_vanna'] * df['openInterest'] * 100 * df[price_col]
+                        # Notional = Vanna × Volume/OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_vanna'] * df[volume_metric] * 100 * df[price_col]
                     elif exposure_col == "DEX":
-                        # Notional = Delta × OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_delta'] * df['openInterest'] * 100 * df[price_col]
+                        # Notional = Delta × Volume/OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_delta'] * df[volume_metric] * 100 * df[price_col]
                     elif exposure_col == "Charm":
-                        # Notional = Charm × OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_charm'] * df['openInterest'] * 100 * df[price_col]
+                        # Notional = Charm × Volume/OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_charm'] * df[volume_metric] * 100 * df[price_col]
                     elif exposure_col == "Speed":
-                        # Notional = Speed × OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_speed'] * df['openInterest'] * 100 * df[price_col]
+                        # Notional = Speed × Volume/OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_speed'] * df[volume_metric] * 100 * df[price_col]
                     elif exposure_col == "Vomma":
-                        # Notional = Vomma × OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_vomma'] * df['openInterest'] * 100 * df[price_col]
+                        # Notional = Vomma × Volume/OI × Contract Size × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_vomma'] * df[volume_metric] * 100 * df[price_col]
                     
                     return df
                 
