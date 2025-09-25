@@ -7568,7 +7568,33 @@ elif st.session_state.current_page == "Implied Probabilities":
                         display_df['Prob Below (%)'] = display_df['Prob Below (%)'].apply(lambda x: f"{x:.1f}%")
                         display_df['Distance from Current'] = display_df['Distance from Current'].apply(lambda x: f"${x:.2f}")
                         
+                        figure = go.Figure()
+                        figure.add_trace(go.Bar(
+                            x=display_df['Strike'],
+                            y=display_df['Prob Above (%)'],
+                            name="Strike Above price",
+                            marker_color="#006E90",
+                        ))
+                        figure.add_trace(go.Bar(
+                            x=display_df['Strike'],
+                            y=display_df['Prob Below (%)'],
+                            name="Strike Below price",
+                            marker_color="#F564A9",
+                        ))
+                        figure.add_vline(
+                            x=S,
+                            line_dash="dash",
+                            line_color="yellow",
+                            opacity=0.7,
+                            annotation_text=f"current price : {S}",
+                            annotation_position="top",
+                        )
+
+                        figure.update_xaxes(range=[S-(S*0.025),S+(S*0.025)])
+
                         st.dataframe(display_df, width='stretch')
+                        st.subheader("Detailed Probability Visualization")
+                        st.plotly_chart(figure, width='stretch')
                     
                     # Additional metrics
                     if implied_move_data:
