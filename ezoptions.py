@@ -4565,8 +4565,8 @@ if st.session_state.current_page == "OI & Volume":
                 with tab1:
                     # Original OI and Volume charts
                     oi_fig, volume_fig = create_oi_volume_charts(all_calls, all_puts, S)
-                    st.plotly_chart(oi_fig, use_container_width=True)
-                    st.plotly_chart(volume_fig, use_container_width=True)
+                    st.plotly_chart(oi_fig, width='stretch')
+                    st.plotly_chart(volume_fig, width='stretch')
                 
                 with tab2:
                     # New: Options flow analysis and visualizations
@@ -4578,17 +4578,17 @@ if st.session_state.current_page == "OI & Volume":
                     
                     with flow_col1:
                         # Show bought vs sold volume
-                        st.plotly_chart(flow_fig, use_container_width=True)
+                        st.plotly_chart(flow_fig, width='stretch')
                         
                         # Show OTM vs ITM volume
-                        st.plotly_chart(money_fig, use_container_width=True)
+                        st.plotly_chart(money_fig, width='stretch')
                     
                     with flow_col2:
                         # Show premium distribution
-                        st.plotly_chart(premium_fig, use_container_width=True)
+                        st.plotly_chart(premium_fig, width='stretch')
                         
                         # Show OTM analysis
-                        st.plotly_chart(otm_fig, use_container_width=True)
+                        st.plotly_chart(otm_fig, width='stretch')
                     
                     # Summary metrics display
                     st.subheader("Options Flow Summary")
@@ -4630,7 +4630,7 @@ if st.session_state.current_page == "OI & Volume":
                     st.dataframe(
                         summary_df.style.map(lambda val: f'color: {st.session_state.call_color if val == "Call" else st.session_state.put_color}', subset=['Type']),
                         hide_index=True,
-                        use_container_width=True
+                        width='stretch'
                     )
                     # Calculate and display put/call ratio
                     put_call_ratio = flow_data['puts']['bought']['volume'] / max(flow_data['calls']['bought']['volume'], 1)
@@ -4820,7 +4820,7 @@ if st.session_state.current_page == "OI & Volume":
                         )
                     )
                     
-                    st.plotly_chart(itm_premium_fig, use_container_width=True)
+                    st.plotly_chart(itm_premium_fig, width='stretch')
                     
                     # Add additional premium insights with ITM flow details
                     st.markdown("### Premium Insights")
@@ -5094,15 +5094,15 @@ if st.session_state.current_page == "OI & Volume":
                                     chart_col1, chart_col2 = st.columns(2)
                                     
                                     with chart_col1:
-                                        st.plotly_chart(fig_pie, use_container_width=True)
+                                        st.plotly_chart(fig_pie, width='stretch')
                                     
                                     with chart_col2:
-                                        st.plotly_chart(fig_bar, use_container_width=True)
+                                        st.plotly_chart(fig_bar, width='stretch')
                                 
                                 # Optional: Show data table in collapsible section
                                 with st.expander("📋 View Raw Data Table", expanded=False):
                                     if not summary_data['raw_data'].empty:
-                                        st.dataframe(summary_data['raw_data'], use_container_width=True)
+                                        st.dataframe(summary_data['raw_data'], width='stretch')
                                     else:
                                         st.warning("No data available in the table.")
                             else:
@@ -5207,7 +5207,7 @@ elif st.session_state.current_page == "Gamma Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width='stretch')
 
 elif st.session_state.current_page == "Vanna Exposure":
     exposure_container = st.container()
@@ -5273,7 +5273,7 @@ elif st.session_state.current_page == "Vanna Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width='stretch')
 
 elif st.session_state.current_page == "Delta Exposure":
     exposure_container = st.container()
@@ -5339,7 +5339,7 @@ elif st.session_state.current_page == "Delta Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width='stretch')
 
 elif st.session_state.current_page == "Charm Exposure":
     exposure_container = st.container()
@@ -5405,7 +5405,7 @@ elif st.session_state.current_page == "Charm Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width='stretch')
 
 elif st.session_state.current_page == "Speed Exposure":
     exposure_container = st.container()
@@ -5471,7 +5471,7 @@ elif st.session_state.current_page == "Speed Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width='stretch')
 
 elif st.session_state.current_page == "Vomma Exposure":
     exposure_container = st.container()
@@ -5537,7 +5537,7 @@ elif st.session_state.current_page == "Vomma Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, use_container_width=True)
+                st.plotly_chart(fig_bar, width='stretch')
 
 elif st.session_state.current_page == "Exposure by Notional Value":
     exposure_container = st.container()
@@ -5637,7 +5637,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "GEX_notional" in all_calls.columns:
                         title = f"GEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_gex = create_exposure_bar_chart(all_calls, all_puts, "GEX_notional", title, S)
-                        st.plotly_chart(fig_gex, use_container_width=True)
+                        st.plotly_chart(fig_gex, width='stretch')
                     else:
                         st.warning("GEX data not available.")
                 
@@ -5645,7 +5645,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "VEX_notional" in all_calls.columns:
                         title = f"VEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_vex = create_exposure_bar_chart(all_calls, all_puts, "VEX_notional", title, S)
-                        st.plotly_chart(fig_vex, use_container_width=True)
+                        st.plotly_chart(fig_vex, width='stretch')
                     else:
                         st.warning("VEX data not available.")
                 
@@ -5653,7 +5653,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "DEX_notional" in all_calls.columns:
                         title = f"DEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_dex = create_exposure_bar_chart(all_calls, all_puts, "DEX_notional", title, S)
-                        st.plotly_chart(fig_dex, use_container_width=True)
+                        st.plotly_chart(fig_dex, width='stretch')
                     else:
                         st.warning("DEX data not available.")
                 
@@ -5661,7 +5661,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "Charm_notional" in all_calls.columns:
                         title = f"Charm Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_charm = create_exposure_bar_chart(all_calls, all_puts, "Charm_notional", title, S)
-                        st.plotly_chart(fig_charm, use_container_width=True)
+                        st.plotly_chart(fig_charm, width='stretch')
                     else:
                         st.warning("Charm data not available.")
                 
@@ -5669,7 +5669,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "Speed_notional" in all_calls.columns:
                         title = f"Speed Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_speed = create_exposure_bar_chart(all_calls, all_puts, "Speed_notional", title, S)
-                        st.plotly_chart(fig_speed, use_container_width=True)
+                        st.plotly_chart(fig_speed, width='stretch')
                     else:
                         st.warning("Speed data not available.")
                 
@@ -5677,7 +5677,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "Vomma_notional" in all_calls.columns:
                         title = f"Vomma Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_vomma = create_exposure_bar_chart(all_calls, all_puts, "Vomma_notional", title, S)
-                        st.plotly_chart(fig_vomma, use_container_width=True)
+                        st.plotly_chart(fig_vomma, width='stretch')
                     else:
                         st.warning("Vomma data not available.")
 
@@ -5801,7 +5801,7 @@ elif st.session_state.current_page == "Calculated Greeks":
                             st.dataframe(df[['contractSymbol', 'strike', 'impliedVolatility', 'calc_delta', 'calc_gamma', 'calc_vanna']])
                             fig = px.scatter(df, x="strike", y="calc_delta", title=f"{typ}: Delta vs. Strike",
                                          labels={"strike": "Strike", "calc_delta": "Calculated Delta"})
-                            st.plotly_chart(fig, use_container_width=True, key=f"Calculated Greeks_{typ.lower()}_scatter")
+                            st.plotly_chart(fig, width='stretch', key=f"Calculated Greeks_{typ.lower()}_scatter")
                         except Exception as e:
                             st.error(f"Error displaying {typ} data: {str(e)}")
                 else:
@@ -6327,7 +6327,7 @@ if st.session_state.current_page == "Dashboard":
                             st.markdown("---")
                     # Display selected charts
                     if "Intraday Price" in selected_charts:
-                        st.plotly_chart(fig_intraday, use_container_width=True, key="Dashboard_intraday_chart")
+                        st.plotly_chart(fig_intraday, width='stretch', key="Dashboard_intraday_chart")
                     
                     supplemental_charts = []
                     for chart, fig in [
@@ -6345,7 +6345,7 @@ if st.session_state.current_page == "Dashboard":
                         cols = st.columns(2)
                         for j, chart in enumerate(supplemental_charts[i:i+2]):
                             if chart is not None:
-                                cols[j].plotly_chart(chart, use_container_width=True)
+                                cols[j].plotly_chart(chart, width='stretch')
 
                 else:
                     st.warning("Please select an expiration date to view the dashboard.")
@@ -6412,7 +6412,7 @@ elif st.session_state.current_page == "Max Pain":
                     # Create and display the max pain chart
                     fig = create_max_pain_chart(all_calls, all_puts, S)
                     if fig is not None:
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
                 else:
                     st.warning("Could not calculate max pain point.")
 
@@ -6623,7 +6623,7 @@ if st.session_state.get('current_page') == "IV Surface":
                             height=800
                         )
 
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
             except Exception as e:
                 st.error(f"Error generating chart: {str(e)}")
@@ -6846,7 +6846,7 @@ elif st.session_state.get('current_page') == "GEX Surface":
                             height=800
                         )
 
-                    st.plotly_chart(fig, use_container_width=True)
+                    st.plotly_chart(fig, width='stretch')
 
             except Exception as e:
                 st.error(f"Error generating chart: {str(e)}")
@@ -7034,7 +7034,7 @@ elif st.session_state.current_page == "Analysis":
             fig.update_yaxes(range=[0, 100], row=2, col=1)
 
             # Display technical analysis chart
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Create MACD chart
             macd_fig = make_subplots(rows=1, cols=1)
@@ -7080,7 +7080,7 @@ elif st.session_state.current_page == "Analysis":
             )
             
             # Display MACD chart
-            st.plotly_chart(macd_fig, use_container_width=True)
+            st.plotly_chart(macd_fig, width='stretch')
             
             # Historical volatility chart
             vol_fig = go.Figure()
@@ -7115,7 +7115,7 @@ elif st.session_state.current_page == "Analysis":
             )
             
             # Display volatility chart
-            st.plotly_chart(vol_fig, use_container_width=True)
+            st.plotly_chart(vol_fig, width='stretch')
 
             # Add trend indicator section
             st.subheader("Technical Indicators Summary")
@@ -7181,7 +7181,7 @@ elif st.session_state.current_page == "Analysis":
 
             weekday_returns = calculate_annualized_return(historical_data, period)
             weekday_fig = create_weekday_returns_chart(weekday_returns)
-            st.plotly_chart(weekday_fig, use_container_width=True)
+            st.plotly_chart(weekday_fig, width='stretch')
 
     st.stop()
 
@@ -7267,7 +7267,7 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
                     all_puts['calc_delta'] = all_puts.apply(lambda row: compute_delta(row, "p"), axis=1)
 
                 fig = create_davi_chart(all_calls, all_puts, S)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width='stretch')
 
 elif st.session_state.current_page == "Implied Probabilities":
     main_container = st.container()
@@ -7522,7 +7522,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                     
                     if prob_data:
                         prob_df_display = pd.DataFrame(prob_data)
-                        st.dataframe(prob_df_display, use_container_width=True)
+                        st.dataframe(prob_df_display, width='stretch')
                     
                     # Explanatory text
                     st.markdown("""
@@ -7546,7 +7546,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                     # Create comprehensive chart
                     if not prob_df.empty:
                         fig = create_implied_probabilities_chart(prob_df, S, prob_16_data, prob_30_data, implied_move_data)
-                        st.plotly_chart(fig, use_container_width=True)
+                        st.plotly_chart(fig, width='stretch')
                     else:
                         st.warning("Could not calculate probability distribution.")
                 
@@ -7568,7 +7568,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                         display_df['Prob Below (%)'] = display_df['Prob Below (%)'].apply(lambda x: f"{x:.1f}%")
                         display_df['Distance from Current'] = display_df['Distance from Current'].apply(lambda x: f"${x:.2f}")
                         
-                        st.dataframe(display_df, use_container_width=True)
+                        st.dataframe(display_df, width='stretch')
                     
                     # Additional metrics
                     if implied_move_data:
