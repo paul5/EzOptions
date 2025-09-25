@@ -2399,6 +2399,7 @@ def create_implied_probabilities_chart(prob_df, S, prob_16_data, prob_30_data, i
                 ),
                 row=1, col=1
             )
+            fig.update_yaxes(range=[S-(0.025*S),S+(0.025*S)])
         
         # Second subplot: Expected Trading Range
         if implied_move_data:
