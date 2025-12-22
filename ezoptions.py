@@ -3507,7 +3507,7 @@ def chart_settings():
 
          
         if 'gex_type' not in st.session_state:
-            st.session_state.gex_type = 'Absolute'  # Default to Absolute GEX
+            st.session_state.gex_type = 'Net'  # Default to Net GEX
         
         gex_type = st.selectbox(
             "Gamma Exposure Type:",
@@ -3672,31 +3672,29 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     # Determine which metric to use based on settings
     volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
 
-    # Correct exposure formulas with proper scaling - ALL FOR $1 MOVE
-    # GEX = Gamma * Volume/OI * Contract Size * Spot Price (for $1 move in underlying)
-    # Gamma is change in delta per $1 move, multiply by spot to get dollar gamma
+    # GEX = Gamma * Volume/OI * Contract Size * Spot Price (Dollar Gamma per $1 move in underlying)
     calls["GEX"] = calls["calc_gamma"] * calls[volume_metric] * 100 * S
     puts["GEX"] = puts["calc_gamma"] * puts[volume_metric] * 100 * S
     
-    # VEX = Vanna * Volume/OI * Contract Size * Spot Price (change in dollar delta per 1 vol point change)
-    calls["VEX"] = calls["calc_vanna"] * calls[volume_metric] * 100 * S
-    puts["VEX"] = puts["calc_vanna"] * puts[volume_metric] * 100 * S
+    # VEX = Vanna * Volume/OI * Contract Size * Spot Price * 0.01 (Dollar Vanna per 1 vol point change)
+    calls["VEX"] = calls["calc_vanna"] * calls[volume_metric] * 100 * S * 0.01
+    puts["VEX"] = puts["calc_vanna"] * puts[volume_metric] * 100 * S * 0.01
     
-    # DEX = Delta * Volume/OI * Contract Size * Spot Price (dollar delta per $1 move)
+    # DEX = Delta * Volume/OI * Contract Size * Spot Price (Dollar Delta Exposure)
     calls["DEX"] = calls["calc_delta"] * calls[volume_metric] * 100 * S
     puts["DEX"] = puts["calc_delta"] * puts[volume_metric] * 100 * S
     
-    # Charm = Charm * Volume/OI * Contract Size * Spot Price / 365 (change in dollar delta per day)
+    # Charm = Charm * Volume/OI * Contract Size * Spot Price / 365 (Dollar Charm per 1 day decay)
     calls["Charm"] = calls["calc_charm"] * calls[volume_metric] * 100 * S / 365.0
     puts["Charm"] = puts["calc_charm"] * puts[volume_metric] * 100 * S / 365.0
     
-    # Speed = Speed * Volume/OI * Contract Size * Spot Price (change in dollar gamma per $1 move)
+    # Speed = Speed * Volume/OI * Contract Size * Spot Price (Dollar Speed per $1 move)
     calls["Speed"] = calls["calc_speed"] * calls[volume_metric] * 100 * S
     puts["Speed"] = puts["calc_speed"] * puts[volume_metric] * 100 * S
     
-    # Vomma = Vomma * Volume/OI * Contract Size * Spot Price (change in dollar vega per 1 vol point change)
-    calls["Vomma"] = calls["calc_vomma"] * calls[volume_metric] * 100 * S
-    puts["Vomma"] = puts["calc_vomma"] * puts[volume_metric] * 100 * S
+    # Vomma = Vomma * Volume/OI * Contract Size * 0.01 (Dollar Vomma per 1 vol point change)
+    calls["Vomma"] = calls["calc_vomma"] * calls[volume_metric] * 100 * 0.01
+    puts["Vomma"] = puts["calc_vomma"] * puts[volume_metric] * 100 * 0.01
 
     # Apply delta adjustment if enabled
     if st.session_state.get('delta_adjusted_exposures', False):
