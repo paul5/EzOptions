@@ -848,17 +848,22 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
             put_premium[i, j] = row['volume'] * row['lastPrice'] * 100
     
     # Create heatmaps
+    call_color = st.session_state.call_color
+    put_color = st.session_state.put_color
+    
     fig_calls = go.Figure(data=go.Heatmap(
         z=call_premium,
         x=strikes,
         y=expiry_dates,
-        colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, 'rgba(0,255,0,0.1)'], [1, st.session_state.call_color]],
+        colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, f'rgba({int(call_color[1:3], 16)},{int(call_color[3:5], 16)},{int(call_color[5:7], 16)},0.1)'], [1, call_color]],
         hoverongaps=False,
         name="Call Premium",
         showscale=True,
         colorbar=dict(
-            title="Premium ($)",
-            titleside="top",
+            title=dict(
+                text="Premium ($)",
+                side="top"
+            ),
             tickformat="$,.0f"
         )
     ))
@@ -899,13 +904,15 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
         z=put_premium,
         x=strikes,
         y=expiry_dates,
-        colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, 'rgba(255,0,0,0.1)'], [1, st.session_state.put_color]],
+        colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, f'rgba({int(put_color[1:3], 16)},{int(put_color[3:5], 16)},{int(put_color[5:7], 16)},0.1)'], [1, put_color]],
         hoverongaps=False,
         name="Put Premium",
         showscale=True,
         colorbar=dict(
-            title="Premium ($)",
-            titleside="top",
+            title=dict(
+                text="Premium ($)",
+                side="top"
+            ),
             tickformat="$,.0f"
         )
     ))
@@ -968,11 +975,14 @@ def create_premium_heatmap(calls_df, puts_df, filtered_strikes, selected_expiry_
             put_premium[expiry_idx][strike_idx] += row['volume'] * row['lastPrice'] * 100
     
     # Create heatmaps
+    call_color = st.session_state.call_color
+    put_color = st.session_state.put_color
+    
     fig_calls = go.Figure(data=go.Heatmap(
         z=call_premium,
         x=filtered_strikes,
         y=selected_expiry_dates,
-        colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, 'rgba(0,255,0,0.1)'], [1, st.session_state.call_color]],
+        colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, f'rgba({int(call_color[1:3], 16)},{int(call_color[3:5], 16)},{int(call_color[5:7], 16)},0.1)'], [1, call_color]],
         hoverongaps=False,
         name="Call Premium",
         showscale=True,
@@ -1018,7 +1028,7 @@ def create_premium_heatmap(calls_df, puts_df, filtered_strikes, selected_expiry_
         z=put_premium,
         x=filtered_strikes,
         y=selected_expiry_dates,
-        colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, 'rgba(255,0,0,0.1)'], [1, st.session_state.put_color]],
+        colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, f'rgba({int(put_color[1:3], 16)},{int(put_color[3:5], 16)},{int(put_color[5:7], 16)},0.1)'], [1, put_color]],
         hoverongaps=False,
         name="Put Premium",
         showscale=True,
@@ -2777,7 +2787,8 @@ def reset_session_state():
         'speed_expiry_multi',
         'vomma_expiry_multi',
         'notional_exposure_expiry_multi',
-        'max_pain_expiry_multi'
+        'max_pain_expiry_multi',
+        'exposure_heatmap_expiry_multi'
     ]
     for key in expiry_selection_keys:
         if key in st.session_state:
@@ -3193,6 +3204,7 @@ page_icons = {
     "Exposure by Notional Value": "💰",
     "Delta-Adjusted Value Index": "📉",
     "Max Pain": "🎯",
+    "Exposure Heatmap": "🔥",
     "GEX Surface": "🗻",
     "IV Surface": "🌐",
     "Implied Probabilities": "🎲",
@@ -3201,7 +3213,7 @@ page_icons = {
 }
 
 pages = ["Dashboard", "OI & Volume", "Gamma Exposure", "Delta Exposure", 
-          "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Exposure by Notional Value", "Delta-Adjusted Value Index", "Max Pain", "GEX Surface", "IV Surface",
+          "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Exposure by Notional Value", "Delta-Adjusted Value Index", "Max Pain", "Exposure Heatmap", "GEX Surface", "IV Surface",
           "Implied Probabilities", "Analysis", "Calculated Greeks"]
 
 # Create page options with icons
@@ -3232,6 +3244,7 @@ if st.session_state.previous_page != new_page:
         'vomma_expiry_multi',
         'notional_exposure_expiry_multi',
         'max_pain_expiry_multi',
+        'exposure_heatmap_expiry_multi',
         'implied_probabilities_expiry_multi'
     ]
     for key in expiry_selection_keys:
@@ -3257,6 +3270,20 @@ def chart_settings():
         # Update session state when the setting changes
         if use_volume != st.session_state.use_volume_for_greeks:
             st.session_state.use_volume_for_greeks = use_volume
+
+        # Initialize delta-adjusted exposures setting
+        if 'delta_adjusted_exposures' not in st.session_state:
+            st.session_state.delta_adjusted_exposures = False  # Default to not delta-adjusted
+        
+        delta_adjusted = st.checkbox(
+            "Delta-Adjusted Exposures",
+            value=st.session_state.delta_adjusted_exposures,
+            help="When enabled, all Greek exposures (Gamma, Vanna, Charm, Speed, Vomma) will be multiplied by Delta to show delta-adjusted values"
+        )
+        
+        # Update session state when the setting changes
+        if delta_adjusted != st.session_state.delta_adjusted_exposures:
+            st.session_state.delta_adjusted_exposures = delta_adjusted
 
         st.write("Colors:")
         new_call_color = st.color_picker("Calls", st.session_state.call_color)
@@ -3644,16 +3671,17 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     # Determine which metric to use based on settings
     volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
 
-    # Correct exposure formulas with proper scaling
-    # GEX = Gamma * Volume/OI * Contract Size * Spot Price^2 * 0.01 (for 1% move sensitivity)
-    calls["GEX"] = calls["calc_gamma"] * calls[volume_metric] * 100 * S * S * 0.01
-    puts["GEX"] = puts["calc_gamma"] * puts[volume_metric] * 100 * S * S * 0.01
+    # Correct exposure formulas with proper scaling - ALL FOR $1 MOVE
+    # GEX = Gamma * Volume/OI * Contract Size * Spot Price (for $1 move in underlying)
+    # Gamma is change in delta per $1 move, multiply by spot to get dollar gamma
+    calls["GEX"] = calls["calc_gamma"] * calls[volume_metric] * 100 * S
+    puts["GEX"] = puts["calc_gamma"] * puts[volume_metric] * 100 * S
     
-    # VEX = Vanna * Volume/OI * Contract Size * Spot Price * 0.01 (change in dollar delta per 1% vol change)
-    calls["VEX"] = calls["calc_vanna"] * calls[volume_metric] * 100 * S * 0.01
-    puts["VEX"] = puts["calc_vanna"] * puts[volume_metric] * 100 * S * 0.01
+    # VEX = Vanna * Volume/OI * Contract Size * Spot Price (change in dollar delta per 1 vol point change)
+    calls["VEX"] = calls["calc_vanna"] * calls[volume_metric] * 100 * S
+    puts["VEX"] = puts["calc_vanna"] * puts[volume_metric] * 100 * S
     
-    # DEX = Delta * Volume/OI * Contract Size * Spot Price
+    # DEX = Delta * Volume/OI * Contract Size * Spot Price (dollar delta per $1 move)
     calls["DEX"] = calls["calc_delta"] * calls[volume_metric] * 100 * S
     puts["DEX"] = puts["calc_delta"] * puts[volume_metric] * 100 * S
     
@@ -3661,13 +3689,31 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     calls["Charm"] = calls["calc_charm"] * calls[volume_metric] * 100 * S / 365.0
     puts["Charm"] = puts["calc_charm"] * puts[volume_metric] * 100 * S / 365.0
     
-    # Speed = Total portfolio speed (dGamma/dSpot)
-    calls["Speed"] = calls["calc_speed"] * calls[volume_metric] * 100
-    puts["Speed"] = puts["calc_speed"] * puts[volume_metric] * 100
+    # Speed = Speed * Volume/OI * Contract Size * Spot Price (change in dollar gamma per $1 move)
+    calls["Speed"] = calls["calc_speed"] * calls[volume_metric] * 100 * S
+    puts["Speed"] = puts["calc_speed"] * puts[volume_metric] * 100 * S
     
-    # Vomma = Vomma * Volume/OI * Contract Size * 0.01 (change in dollar vega per 1% vol change)
-    calls["Vomma"] = calls["calc_vomma"] * calls[volume_metric] * 100 * 0.01
-    puts["Vomma"] = puts["calc_vomma"] * puts[volume_metric] * 100 * 0.01
+    # Vomma = Vomma * Volume/OI * Contract Size * Spot Price (change in dollar vega per 1 vol point change)
+    calls["Vomma"] = calls["calc_vomma"] * calls[volume_metric] * 100 * S
+    puts["Vomma"] = puts["calc_vomma"] * puts[volume_metric] * 100 * S
+
+    # Apply delta adjustment if enabled
+    if st.session_state.get('delta_adjusted_exposures', False):
+        # Multiply all exposures (except DEX which is already delta-based) by delta
+        calls["GEX"] = calls["GEX"] * calls["calc_delta"]
+        puts["GEX"] = puts["GEX"] * puts["calc_delta"]
+        
+        calls["VEX"] = calls["VEX"] * calls["calc_delta"]
+        puts["VEX"] = puts["VEX"] * puts["calc_delta"]
+        
+        calls["Charm"] = calls["Charm"] * calls["calc_delta"]
+        puts["Charm"] = puts["Charm"] * puts["calc_delta"]
+        
+        calls["Speed"] = calls["Speed"] * calls["calc_delta"]
+        puts["Speed"] = puts["Speed"] * puts["calc_delta"]
+        
+        calls["Vomma"] = calls["Vomma"] * calls["calc_delta"]
+        puts["Vomma"] = puts["Vomma"] * puts["calc_delta"]
 
     return calls, puts, S, t, selected_expiry, today
 
@@ -3721,10 +3767,11 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
 
     # Get the metric being used and add it to the title
     metric_name = "Volume" if st.session_state.get('use_volume_for_greeks', False) else "Open Interest"
+    delta_adjusted_label = " (Δ-Adjusted)" if st.session_state.get('delta_adjusted_exposures', False) and exposure_type != 'DEX' else ""
     
     # Update title to include total Greek values with colored values using HTML and metric info
     title_with_totals = (
-        f"{title} ({metric_name})     "
+        f"{title}{delta_adjusted_label} ({metric_name})     "
         f"<span style='color: {st.session_state.call_color}'>{total_call_value:,.0f}</span> | "
         f"<span style='color: {st.session_state.put_color}'>{total_put_value:,.0f}</span>"
     )
@@ -5209,271 +5256,7 @@ elif st.session_state.current_page == "Gamma Exposure":
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
                 st.plotly_chart(fig_bar, use_container_width=True)
 
-elif st.session_state.current_page == "Vanna Exposure":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
-        page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
-        col1, col2 = st.columns([0.94, 0.06])
-        with col1:
-            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key=f"{page_name}_exposure_ticker")
-        with col2:
-            st.write("")  # Add some spacing
-            st.write("")  # Add some spacing
-            if st.button("🔄", key=f"refresh_button_{page_name}"):
-                st.cache_data.clear()  # Clear the cache before rerunning
-                st.rerun()
-        ticker = format_ticker(user_ticker)
-        
-        # Clear cache if ticker changes
-        if ticker != saved_ticker:
-            st.cache_data.clear()
-            save_ticker(ticker)  # Save the ticker
-        
-        if ticker:
-            # Fetch price once
-            S = get_current_price(ticker)
-            if S is None:
-                st.error("Could not fetch current price.")
-                st.stop()
-
-            stock = yf.Ticker(ticker)
-            available_dates = stock.options
-            if not available_dates:
-                st.warning("No options data available for this ticker.")
-            else:
-                selected_expiry_dates, selector_container = expiry_selector_fragment(st.session_state.current_page, available_dates)
-                st.session_state.expiry_selector_container = selector_container
-                
-                if not selected_expiry_dates:
-                    st.warning("Please select at least one expiration date.")
-                    st.stop()
-                
-                all_calls, all_puts = fetch_and_process_multiple_dates(
-                    ticker, 
-                    selected_expiry_dates,
-                    lambda t, d: compute_greeks_and_charts(t, d, page_name, S)[:2]  # Only take calls and puts
-                )
-                
-                if all_calls.empty and all_puts.empty:
-                    st.warning("No options data available for the selected dates.")
-                    st.stop()
-                
-                exposure_type_map = {
-                    "Gamma Exposure": "GEX",
-                    "Vanna Exposure": "VEX",
-                    "Delta Exposure": "DEX",
-                    "Charm Exposure": "Charm",
-                    "Speed Exposure": "Speed",
-                    "Vomma Exposure": "Vomma"
-                }
-                
-                exposure_type = exposure_type_map[st.session_state.current_page]
-                
-                # Modify the bar chart title to show multiple dates
-                title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
-                fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-elif st.session_state.current_page == "Delta Exposure":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
-        page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
-        col1, col2 = st.columns([0.94, 0.06])
-        with col1:
-            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key=f"{page_name}_exposure_ticker")
-        with col2:
-            st.write("")  # Add some spacing
-            st.write("")  # Add some spacing
-            if st.button("🔄", key=f"refresh_button_{page_name}"):
-                st.cache_data.clear()  # Clear the cache before rerunning
-                st.rerun()
-        ticker = format_ticker(user_ticker)
-        
-        # Clear cache if ticker changes
-        if ticker != saved_ticker:
-            st.cache_data.clear()
-            save_ticker(ticker)  # Save the ticker
-        
-        if ticker:
-            # Fetch price once
-            S = get_current_price(ticker)
-            if S is None:
-                st.error("Could not fetch current price.")
-                st.stop()
-
-            stock = yf.Ticker(ticker)
-            available_dates = stock.options
-            if not available_dates:
-                st.warning("No options data available for this ticker.")
-            else:
-                selected_expiry_dates, selector_container = expiry_selector_fragment(st.session_state.current_page, available_dates)
-                st.session_state.expiry_selector_container = selector_container
-                
-                if not selected_expiry_dates:
-                    st.warning("Please select at least one expiration date.")
-                    st.stop()
-                
-                all_calls, all_puts = fetch_and_process_multiple_dates(
-                    ticker, 
-                    selected_expiry_dates,
-                    lambda t, d: compute_greeks_and_charts(t, d, page_name, S)[:2]  # Only take calls and puts
-                )
-                
-                if all_calls.empty and all_puts.empty:
-                    st.warning("No options data available for the selected dates.")
-                    st.stop()
-                
-                exposure_type_map = {
-                    "Gamma Exposure": "GEX",
-                    "Vanna Exposure": "VEX",
-                    "Delta Exposure": "DEX",
-                    "Charm Exposure": "Charm",
-                    "Speed Exposure": "Speed",
-                    "Vomma Exposure": "Vomma"
-                }
-                
-                exposure_type = exposure_type_map[st.session_state.current_page]
-                
-                # Modify the bar chart title to show multiple dates
-                title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
-                fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-elif st.session_state.current_page == "Charm Exposure":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
-        page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
-        col1, col2 = st.columns([0.94, 0.06])
-        with col1:
-            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key=f"{page_name}_exposure_ticker")
-        with col2:
-            st.write("")  # Add some spacing
-            st.write("")  # Add some spacing
-            if st.button("🔄", key=f"refresh_button_{page_name}"):
-                st.cache_data.clear()  # Clear the cache before rerunning
-                st.rerun()
-        ticker = format_ticker(user_ticker)
-        
-        # Clear cache if ticker changes
-        if ticker != saved_ticker:
-            st.cache_data.clear()
-            save_ticker(ticker)  # Save the ticker
-        
-        if ticker:
-            # Fetch price once
-            S = get_current_price(ticker)
-            if S is None:
-                st.error("Could not fetch current price.")
-                st.stop()
-
-            stock = yf.Ticker(ticker)
-            available_dates = stock.options
-            if not available_dates:
-                st.warning("No options data available for this ticker.")
-            else:
-                selected_expiry_dates, selector_container = expiry_selector_fragment(st.session_state.current_page, available_dates)
-                st.session_state.expiry_selector_container = selector_container
-                
-                if not selected_expiry_dates:
-                    st.warning("Please select at least one expiration date.")
-                    st.stop()
-                
-                all_calls, all_puts = fetch_and_process_multiple_dates(
-                    ticker, 
-                    selected_expiry_dates,
-                    lambda t, d: compute_greeks_and_charts(t, d, page_name, S)[:2]  # Only take calls and puts
-                )
-                
-                if all_calls.empty and all_puts.empty:
-                    st.warning("No options data available for the selected dates.")
-                    st.stop()
-                
-                exposure_type_map = {
-                    "Gamma Exposure": "GEX",
-                    "Vanna Exposure": "VEX",
-                    "Delta Exposure": "DEX",
-                    "Charm Exposure": "Charm",
-                    "Speed Exposure": "Speed",
-                    "Vomma Exposure": "Vomma"
-                }
-                
-                exposure_type = exposure_type_map[st.session_state.current_page]
-                
-                # Modify the bar chart title to show multiple dates
-                title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
-                fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-elif st.session_state.current_page == "Speed Exposure":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
-        page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
-        col1, col2 = st.columns([0.94, 0.06])
-        with col1:
-            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key=f"{page_name}_exposure_ticker")
-        with col2:
-            st.write("")  # Add some spacing
-            st.write("")  # Add some spacing
-            if st.button("🔄", key=f"refresh_button_{page_name}"):
-                st.cache_data.clear()  # Clear the cache before rerunning
-                st.rerun()
-        ticker = format_ticker(user_ticker)
-        
-        # Clear cache if ticker changes
-        if ticker != saved_ticker:
-            st.cache_data.clear()
-            save_ticker(ticker)  # Save the ticker
-        
-        if ticker:
-            # Fetch price once
-            S = get_current_price(ticker)
-            if S is None:
-                st.error("Could not fetch current price.")
-                st.stop()
-
-            stock = yf.Ticker(ticker)
-            available_dates = stock.options
-            if not available_dates:
-                st.warning("No options data available for this ticker.")
-            else:
-                selected_expiry_dates, selector_container = expiry_selector_fragment(st.session_state.current_page, available_dates)
-                st.session_state.expiry_selector_container = selector_container
-                
-                if not selected_expiry_dates:
-                    st.warning("Please select at least one expiration date.")
-                    st.stop()
-                
-                all_calls, all_puts = fetch_and_process_multiple_dates(
-                    ticker, 
-                    selected_expiry_dates,
-                    lambda t, d: compute_greeks_and_charts(t, d, page_name, S)[:2]  # Only take calls and puts
-                )
-                
-                if all_calls.empty and all_puts.empty:
-                    st.warning("No options data available for the selected dates.")
-                    st.stop()
-                
-                exposure_type_map = {
-                    "Gamma Exposure": "GEX",
-                    "Vanna Exposure": "VEX",
-                    "Delta Exposure": "DEX",
-                    "Charm Exposure": "Charm",
-                    "Speed Exposure": "Speed",
-                    "Vomma Exposure": "Vomma"
-                }
-                
-                exposure_type = exposure_type_map[st.session_state.current_page]
-                
-                # Modify the bar chart title to show multiple dates
-                title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
-                fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, use_container_width=True)
-
-elif st.session_state.current_page == "Vomma Exposure":
+elif st.session_state.current_page in ["Vanna Exposure", "Delta Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure"]:
     exposure_container = st.container()
     with exposure_container:
         st.empty()  # Clear previous content
@@ -5590,8 +5373,9 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     st.stop()
                 
                 # Calculate notional value exposure from raw greek values
-                def calculate_notional_exposure(df, exposure_col):
-                    """Calculate notional value exposure from raw greek values × contract price × contract size"""
+                def calculate_notional_exposure(df, exposure_col, spot_price):
+                    """Calculate notional value exposure: Greek × Volume/OI × Contract Size × Spot Price × Contract Price
+                    This represents the total dollar exposure weighted by the option premium (notional value)."""
                     if exposure_col not in df.columns:
                         return df
                     
@@ -5601,34 +5385,34 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     # Determine which volume metric to use
                     volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
                     
-                    # Calculate notional exposure from raw greek values (not the already-scaled exposure values)
-                    # This avoids double-scaling issues
+                    # Calculate notional exposure from raw greek values
+                    # Notional = Greek Exposure (per $1 move) × Contract Premium (to weight by notional value)
                     if exposure_col == "GEX":
-                        # Notional = Gamma × Volume/OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * df[volume_metric] * 100 * df[price_col]
+                        # Notional = Gamma × Volume/OI × Contract Size × Spot Price × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * df[volume_metric] * 100 * spot_price * df[price_col]
                     elif exposure_col == "VEX":
-                        # Notional = Vanna × Volume/OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_vanna'] * df[volume_metric] * 100 * df[price_col]
+                        # Notional = Vanna × Volume/OI × Contract Size × Spot Price × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_vanna'] * df[volume_metric] * 100 * spot_price * df[price_col]
                     elif exposure_col == "DEX":
-                        # Notional = Delta × Volume/OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_delta'] * df[volume_metric] * 100 * df[price_col]
+                        # Notional = Delta × Volume/OI × Contract Size × Spot Price × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_delta'] * df[volume_metric] * 100 * spot_price * df[price_col]
                     elif exposure_col == "Charm":
-                        # Notional = Charm × Volume/OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_charm'] * df[volume_metric] * 100 * df[price_col]
+                        # Notional = Charm × Volume/OI × Contract Size × Spot Price × Contract Price / 365
+                        df[f'{exposure_col}_notional'] = df['calc_charm'] * df[volume_metric] * 100 * spot_price * df[price_col] / 365.0
                     elif exposure_col == "Speed":
-                        # Notional = Speed × Volume/OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_speed'] * df[volume_metric] * 100 * df[price_col]
+                        # Notional = Speed × Volume/OI × Contract Size × Spot Price × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_speed'] * df[volume_metric] * 100 * spot_price * df[price_col]
                     elif exposure_col == "Vomma":
-                        # Notional = Vomma × Volume/OI × Contract Size × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_vomma'] * df[volume_metric] * 100 * df[price_col]
+                        # Notional = Vomma × Volume/OI × Contract Size × Spot Price × Contract Price
+                        df[f'{exposure_col}_notional'] = df['calc_vomma'] * df[volume_metric] * 100 * spot_price * df[price_col]
                     
                     return df
                 
                 # Calculate notional exposure for all exposure types
                 for exposure_type in ["GEX", "VEX", "DEX", "Charm", "Speed", "Vomma"]:
                     if f'calc_{exposure_type.lower()}' in all_calls.columns or exposure_type in all_calls.columns:
-                        all_calls = calculate_notional_exposure(all_calls, exposure_type)
-                        all_puts = calculate_notional_exposure(all_puts, exposure_type)
+                        all_calls = calculate_notional_exposure(all_calls, exposure_type, S)
+                        all_puts = calculate_notional_exposure(all_puts, exposure_type, S)
                 
                 # Create tabs for different exposure types
                 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Gamma (GEX)", "Vanna (VEX)", "Delta (DEX)", "Charm", "Speed", "Vomma"])
@@ -5808,7 +5592,7 @@ elif st.session_state.current_page == "Calculated Greeks":
                     st.warning("Please select an expiration date to view the calculations.")
                     st.stop()
 
-if st.session_state.current_page == "Dashboard":
+elif st.session_state.current_page == "Dashboard":
     dashboard_container = st.container()
     with dashboard_container:
         st.empty()  # Clear previous content
@@ -6416,27 +6200,23 @@ elif st.session_state.current_page == "Max Pain":
                 else:
                     st.warning("Could not calculate max pain point.")
 
-if st.session_state.get('current_page') == "IV Surface":
+elif st.session_state.current_page == "IV Surface":
     main_container = st.container()
     with main_container:
-        # Layout for ticker input and refresh button
+        st.empty()
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
-            user_ticker = st.text_input(
-                "Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):",
-                value=st.session_state.get('saved_ticker', ''),
-                key="iv_skew_ticker"
-            )
+            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="iv_skew_ticker")
         with col2:
-            st.write("")  # Spacer
-            st.write("")  # Spacer
+            st.write("")
+            st.write("")
             if st.button("🔄", key="refresh_button_skew"):
                 st.cache_data.clear()
                 st.rerun()
-
-        # Format and save ticker
+        
         ticker = format_ticker(user_ticker)
-        if ticker != st.session_state.get('saved_ticker', ''):
+        
+        if ticker != saved_ticker:
             st.cache_data.clear()
             save_ticker(ticker)
 
@@ -6629,7 +6409,7 @@ if st.session_state.get('current_page') == "IV Surface":
                 st.error(f"Error generating chart: {str(e)}")
     st.stop()
 
-elif st.session_state.get('current_page') == "GEX Surface":
+elif st.session_state.current_page == "GEX Surface":
     main_container = st.container()
     with main_container:
         # Layout for ticker input and refresh button
@@ -7269,6 +7049,340 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
                 fig = create_davi_chart(all_calls, all_puts, S)
                 st.plotly_chart(fig, use_container_width=True)
 
+elif st.session_state.current_page == "Exposure Heatmap":
+    main_container = st.container()
+    with main_container:
+        st.empty()
+        col1, col2 = st.columns([0.94, 0.06])
+        with col1:
+            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="exposure_heatmap_ticker")
+        with col2:
+            st.write("")
+            st.write("")
+            if st.button("🔄", key="refresh_button_heatmap"):
+                st.cache_data.clear()
+                st.rerun()
+        
+        ticker = format_ticker(user_ticker)
+        
+        if ticker != saved_ticker:
+            st.cache_data.clear()
+            save_ticker(ticker)
+        
+        if ticker:
+            try:
+                # Get current price
+                S = get_current_price(ticker)
+                if S is None:
+                    st.error(f"Unable to fetch current price for {ticker}")
+                    st.stop()
+                
+                # Get options data
+                stock = yf.Ticker(ticker)
+                available_dates = stock.options
+                
+                if not available_dates:
+                    st.warning("No options data available for this ticker.")
+                    st.stop()
+                
+                # Calculate default selection: dates within 1 week
+                from datetime import datetime, timedelta
+                today = datetime.now().date()
+                one_week_later = today + timedelta(days=7)
+                default_dates = [d for d in available_dates if pd.to_datetime(d).date() <= one_week_later]
+                
+                # If no dates within a week, use first 3 dates
+                if not default_dates:
+                    default_dates = available_dates[:min(3, len(available_dates))]
+                
+                # Expiry date selection
+                selected_expiry_dates = st.multiselect(
+                    "Select Expiration Dates:",
+                    options=available_dates,
+                    default=default_dates,
+                    key="exposure_heatmap_expiry_multi"
+                )
+                
+                if not selected_expiry_dates:
+                    st.warning("Please select at least one expiration date")
+                    st.stop()
+                
+                # Exposure type selection
+                exposure_types = {
+                    "Gamma Exposure (GEX)": "GEX",
+                    "Delta Exposure (DEX)": "DEX",
+                    "Vanna Exposure (VEX)": "VEX",
+                    "Charm Exposure": "Charm",
+                    "Speed Exposure": "Speed",
+                    "Vomma Exposure": "Vomma"
+                }
+                
+                selected_exposure_name = st.selectbox(
+                    "Select Exposure Type:",
+                    options=list(exposure_types.keys()),
+                    key="exposure_heatmap_type"
+                )
+                
+                exposure_type = exposure_types[selected_exposure_name]
+                
+                # Calculate Greeks for all selected dates
+                with st.spinner("Calculating exposures..."):
+                    all_calls_with_greeks = []
+                    all_puts_with_greeks = []
+                    
+                    for expiry_date in selected_expiry_dates:
+                        result = compute_greeks_and_charts(ticker, expiry_date, "exposure_heatmap", S)
+                        
+                        if result and result[0] is not None:
+                            calls_with_greeks, puts_with_greeks, _, _, _, _ = result
+                            all_calls_with_greeks.append(calls_with_greeks)
+                            all_puts_with_greeks.append(puts_with_greeks)
+                
+                if not all_calls_with_greeks or not all_puts_with_greeks:
+                    st.error("Unable to calculate exposures for the selected dates")
+                    st.stop()
+                
+                # Combine all data
+                combined_calls = pd.concat(all_calls_with_greeks, ignore_index=True)
+                combined_puts = pd.concat(all_puts_with_greeks, ignore_index=True)
+                
+                # Get unique strikes and dates from actual data
+                all_strikes = sorted(set(combined_calls['strike'].unique()) | set(combined_puts['strike'].unique()))
+                dates_with_data = sorted(set(combined_calls['extracted_expiry'].unique()) | set(combined_puts['extracted_expiry'].unique()))
+                
+                # Filter strikes based on strike range
+                strike_range = calculate_strike_range(S)
+                min_strike = S - strike_range
+                max_strike = S + strike_range
+                filtered_strikes = [s for s in all_strikes if min_strike <= s <= max_strike]
+                
+                # Create heatmap data matrices
+                call_exposure = np.zeros((len(filtered_strikes), len(dates_with_data)))
+                put_exposure = np.zeros((len(filtered_strikes), len(dates_with_data)))
+                
+                strike_to_idx = {strike: i for i, strike in enumerate(filtered_strikes)}
+                date_to_idx = {date: i for i, date in enumerate(dates_with_data)}
+                
+                # Fill matrices
+                for _, row in combined_calls.iterrows():
+                    if row['strike'] in strike_to_idx and row['extracted_expiry'] in date_to_idx:
+                        strike_idx = strike_to_idx[row['strike']]
+                        date_idx = date_to_idx[row['extracted_expiry']]
+                        call_exposure[strike_idx, date_idx] += row[exposure_type]
+                
+                for _, row in combined_puts.iterrows():
+                    if row['strike'] in strike_to_idx and row['extracted_expiry'] in date_to_idx:
+                        strike_idx = strike_to_idx[row['strike']]
+                        date_idx = date_to_idx[row['extracted_expiry']]
+                        put_exposure[strike_idx, date_idx] += row[exposure_type]
+                
+                # Calculate net exposure
+                if exposure_type in ['GEX', 'GEX_notional']:
+                    net_exposure = call_exposure - put_exposure
+                elif exposure_type == 'DEX':
+                    net_exposure = call_exposure + put_exposure
+                else:
+                    net_exposure = call_exposure - put_exposure
+                
+                # Format dates for display
+                date_labels = [d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d) for d in dates_with_data]
+                
+                # Get metric name
+                metric_name = "Volume" if st.session_state.get('use_volume_for_greeks', False) else "Open Interest"
+                delta_adjusted_label = " (Δ-Adjusted)" if st.session_state.get('delta_adjusted_exposures', False) and exposure_type != 'DEX' else ""
+                
+                # Create heatmaps
+                call_color = st.session_state.call_color
+                put_color = st.session_state.put_color
+                
+                # Call Exposure Heatmap
+                if st.session_state.show_calls:
+                    fig_calls = go.Figure(data=go.Heatmap(
+                        z=call_exposure,
+                        x=date_labels,
+                        y=filtered_strikes,
+                        text=call_exposure,
+                        texttemplate='%{text:.2s}',
+                        colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, f'rgba({int(call_color[1:3], 16)},{int(call_color[3:5], 16)},{int(call_color[5:7], 16)},0.1)'], [1, call_color]],
+                        hoverongaps=False,
+                        name="Call Exposure",
+                        showscale=False,
+                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Exposure: %{z:,.0f}<extra></extra>'
+                    ))
+                    
+                    fig_calls.add_hline(
+                        y=S,
+                        line_dash="dash",
+                        line_color="white",
+                        opacity=0.7,
+                        annotation_text=f"${S:.2f}",
+                        annotation_position="right"
+                    )
+                    
+                    fig_calls.update_layout(
+                        title=dict(
+                            text=f"Call {selected_exposure_name}{delta_adjusted_label} ({metric_name})",
+                            x=0,
+                            xanchor='left',
+                            font=dict(size=st.session_state.chart_text_size + 8)
+                        ),
+                        xaxis_title=dict(
+                            text='Expiration Date',
+                            font=dict(size=st.session_state.chart_text_size)
+                        ),
+                        yaxis_title=dict(
+                            text='Strike Price',
+                            font=dict(size=st.session_state.chart_text_size)
+                        ),
+                        template="plotly_dark",
+                        height=600,
+                        xaxis=dict(
+                            tickfont=dict(size=st.session_state.chart_text_size - 2),
+                            tickangle=-45,
+                            type='category'
+                        ),
+                        yaxis=dict(
+                            tickfont=dict(size=st.session_state.chart_text_size)
+                        ),
+                        margin=dict(r=100)
+                    )
+                    
+                    st.plotly_chart(fig_calls, use_container_width=True)
+                
+                # Put Exposure Heatmap
+                if st.session_state.show_puts:
+                    fig_puts = go.Figure(data=go.Heatmap(
+                        z=put_exposure,
+                        x=date_labels,
+                        y=filtered_strikes,
+                        text=put_exposure,
+                        texttemplate='%{text:.2s}',
+                        colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, f'rgba({int(put_color[1:3], 16)},{int(put_color[3:5], 16)},{int(put_color[5:7], 16)},0.1)'], [1, put_color]],
+                        hoverongaps=False,
+                        name="Put Exposure",
+                        showscale=False,
+                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Exposure: %{z:,.0f}<extra></extra>'
+                    ))
+                    
+                    fig_puts.add_hline(
+                        y=S,
+                        line_dash="dash",
+                        line_color="white",
+                        opacity=0.7,
+                        annotation_text=f"${S:.2f}",
+                        annotation_position="right"
+                    )
+                    
+                    fig_puts.update_layout(
+                        title=dict(
+                            text=f"Put {selected_exposure_name}{delta_adjusted_label} ({metric_name})",
+                            x=0,
+                            xanchor='left',
+                            font=dict(size=st.session_state.chart_text_size + 8)
+                        ),
+                        xaxis_title=dict(
+                            text='Expiration Date',
+                            font=dict(size=st.session_state.chart_text_size)
+                        ),
+                        yaxis_title=dict(
+                            text='Strike Price',
+                            font=dict(size=st.session_state.chart_text_size)
+                        ),
+                        template="plotly_dark",
+                        height=600,
+                        xaxis=dict(
+                            tickfont=dict(size=st.session_state.chart_text_size - 2),
+                            tickangle=-45,
+                            type='category'
+                        ),
+                        yaxis=dict(
+                            tickfont=dict(size=st.session_state.chart_text_size)
+                        ),
+                        margin=dict(r=100)
+                    )
+                    
+                    st.plotly_chart(fig_puts, use_container_width=True)
+                
+                # Net Exposure Heatmap
+                if st.session_state.show_net:
+                    # Use custom colors for all exposure types
+                    colorscale = [[0, put_color], [0.5, 'black'], [1, call_color]]
+                    
+                    fig_net = go.Figure(data=go.Heatmap(
+                        z=net_exposure,
+                        x=date_labels,
+                        y=filtered_strikes,
+                        text=net_exposure,
+                        texttemplate='%{text:.2s}',
+                        colorscale=colorscale,
+                        hoverongaps=False,
+                        name="Net Exposure",
+                        showscale=False,
+                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Net Exposure: %{z:,.0f}<extra></extra>',
+                        zmid=0
+                    ))
+                    
+                    fig_net.add_hline(
+                        y=S,
+                        line_dash="dash",
+                        line_color="white",
+                        opacity=0.7,
+                        annotation_text=f"${S:.2f}",
+                        annotation_position="right"
+                    )
+                    
+                    fig_net.update_layout(
+                        title=dict(
+                            text=f"Net {selected_exposure_name}{delta_adjusted_label} ({metric_name})",
+                            x=0,
+                            xanchor='left',
+                            font=dict(size=st.session_state.chart_text_size + 8)
+                        ),
+                        xaxis_title=dict(
+                            text='Expiration Date',
+                            font=dict(size=st.session_state.chart_text_size)
+                        ),
+                        yaxis_title=dict(
+                            text='Strike Price',
+                            font=dict(size=st.session_state.chart_text_size)
+                        ),
+                        template="plotly_dark",
+                        height=600,
+                        xaxis=dict(
+                            tickfont=dict(size=st.session_state.chart_text_size - 2),
+                            tickangle=-45,
+                            type='category'
+                        ),
+                        yaxis=dict(
+                            tickfont=dict(size=st.session_state.chart_text_size)
+                        ),
+                        margin=dict(r=100)
+                    )
+                    
+                    st.plotly_chart(fig_net, use_container_width=True)
+                
+                # Summary statistics
+                st.markdown("### 📊 Summary Statistics")
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    total_call = np.sum(call_exposure)
+                    st.metric("Total Call Exposure", f"${total_call:,.0f}")
+                
+                with col2:
+                    total_put = np.sum(put_exposure)
+                    st.metric("Total Put Exposure", f"${total_put:,.0f}")
+                
+                with col3:
+                    total_net = np.sum(net_exposure)
+                    st.metric("Total Net Exposure", f"${total_net:,.0f}")
+            
+            except Exception as e:
+                st.error(f"Error loading data: {str(e)}")
+                import traceback
+                st.code(traceback.format_exc())
+    st.stop()
+
 elif st.session_state.current_page == "Implied Probabilities":
     main_container = st.container()
     with main_container:
@@ -7619,23 +7733,3 @@ if not is_market_maker_active:
     else:
         time.sleep(refresh_rate)
         st.rerun()
-
-def calculate_heikin_ashi(df):
-    """Calculate Heikin Ashi candlestick values."""
-    ha_df = pd.DataFrame(index=df.index)
-    
-    # Calculate Heikin Ashi values
-    ha_df['HA_Close'] = (df['Open'] + df['High'] + df['Low'] + df['Close']) / 4
-    
-    # Initialize HA_Open with first candle's opening price
-    ha_df['HA_Open'] = pd.Series(index=df.index)
-    ha_df.loc[ha_df.index[0], 'HA_Open'] = df['Open'].iloc[0]
-    
-    # Calculate subsequent HA_Open values
-    for i in range(1, len(df)):
-        ha_df.loc[ha_df.index[i], 'HA_Open'] = (ha_df['HA_Open'].iloc[i-1] + ha_df['HA_Close'].iloc[i-1]) / 2
-    
-    ha_df['HA_High'] = df[['High', 'Open', 'Close']].max(axis=1)
-    ha_df['HA_Low'] = df[['Low', 'Open', 'Close']].min(axis=1)
-    
-    return ha_df
