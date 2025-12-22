@@ -11,7 +11,7 @@
 </div>
 
 <div align="center">
-  <img src="[https://i.imgur.com/2J93Tgv.png" width="500">
+  <img src="https://i.imgur.com/2J93Tgv.png" width="500">
 </div>
 
 ## Table of Contents
