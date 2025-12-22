@@ -10,6 +10,10 @@
   <img src="https://i.imgur.com/4rQXa1C.png" width="500">
 </div>
 
+<div align="center">
+  <img src="[https://i.imgur.com/2J93Tgv.png" width="500">
+</div>
+
 ## Table of Contents
 
 - [Quick Start](#quick-start)
@@ -58,7 +62,7 @@
 ## How to Keep Updated
 
 1. Running `main.py` will always ensure you are using the latest version of EzOptions.
-2. Stay tuned for new features and improvements by following our [GitHub repository](https://github.com/EazyDuz1t/EzOptions) and joining our [Discord community](https://discord.gg/QaDqgzrfz7). We are constantly adding new features and enhancements to make your trading experience even better!
+2. Stay tuned for new features and improvements by following our [GitHub repository](https://github.com/EazyDuz1t/EzOptions). We are constantly adding new features and enhancements to make your trading experience even better!
 
 ## Credits
 
