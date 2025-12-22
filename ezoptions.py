@@ -862,8 +862,10 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
         colorbar=dict(
             title=dict(
                 text="Premium ($)",
-                side="top"
+                side="top",
+                font=dict(color="white")
             ),
+            tickfont=dict(color="white"),
             tickformat="$,.0f"
         )
     ))
@@ -911,8 +913,10 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
         colorbar=dict(
             title=dict(
                 text="Premium ($)",
-                side="top"
+                side="top",
+                font=dict(color="white")
             ),
+            tickfont=dict(color="white"),
             tickformat="$,.0f"
         )
     ))
@@ -987,7 +991,8 @@ def create_premium_heatmap(calls_df, puts_df, filtered_strikes, selected_expiry_
         name="Call Premium",
         showscale=True,
         colorbar=dict(
-            title="Premium ($)",
+            title=dict(text="Premium ($)", font=dict(color="white")),
+            tickfont=dict(color="white"),
             tickformat="$,.0f"
         )
     ))
@@ -1033,7 +1038,8 @@ def create_premium_heatmap(calls_df, puts_df, filtered_strikes, selected_expiry_
         name="Put Premium",
         showscale=True,
         colorbar=dict(
-            title="Premium ($)",
+            title=dict(text="Premium ($)", font=dict(color="white")),
+            tickfont=dict(color="white"),
             tickformat="$,.0f"
         )
     ))
@@ -7568,8 +7574,33 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 
                 # Net Exposure Heatmap
                 if st.session_state.show_net:
-                    # Use custom colors for all exposure types
-                    colorscale = [[0, put_color], [0.5, 'black'], [1, call_color]]
+                    # Calculate min/max to determine zero position for asymmetric colorscale
+                    net_min = np.min(net_exposure) if net_exposure.size > 0 else 0
+                    net_max = np.max(net_exposure) if net_exposure.size > 0 else 0
+                    
+                    # Ensure range includes 0
+                    val_min = min(net_min, 0)
+                    val_max = max(net_max, 0)
+                    
+                    # Construct asymmetric colorscale
+                    if val_max == val_min:
+                        colorscale = [[0, 'black'], [1, 'black']]
+                    else:
+                        zero_pos = (0 - val_min) / (val_max - val_min)
+                        colorscale = []
+                        
+                        if val_min < 0:
+                            colorscale.append([0, put_color])
+                        else:
+                            colorscale.append([0, 'black'])
+                            
+                        if 0 < zero_pos < 1:
+                            colorscale.append([zero_pos, 'black'])
+                            
+                        if val_max > 0:
+                            colorscale.append([1, call_color])
+                        else:
+                            colorscale.append([1, 'black'])
                     
                     fig_net = go.Figure(data=go.Heatmap(
                         z=net_exposure,
@@ -7582,7 +7613,8 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         name="Net Exposure",
                         showscale=False,
                         hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Net Exposure: %{z:,.0f}<extra></extra>',
-                        zmid=0
+                        zmin=val_min,
+                        zmax=val_max
                     ))
                     
                     fig_net.add_hline(
