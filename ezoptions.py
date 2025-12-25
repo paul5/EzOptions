@@ -283,6 +283,14 @@ with st_thread_context():
 # Prevent page dimming during reruns
 st.markdown("<style>.element-container{opacity:1 !important}</style>", unsafe_allow_html=True)
 
+# Force a rerun on first load to ensure clean state
+if 'loading_complete' not in st.session_state:
+    st.session_state.loading_complete = False
+
+if not st.session_state.loading_complete:
+    st.session_state.loading_complete = True
+    st.rerun()
+
 # Initialize session state for colors if not already set
 if 'call_color' not in st.session_state:
     st.session_state.call_color = '#00FF00'  # Default green for calls
@@ -348,7 +356,7 @@ def calculate_strike_range(current_price, percentage=None):
         percentage = st.session_state.get('strike_range', 1.0)
     return current_price * (percentage / 100.0)
 
-@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
+@st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
 def fetch_options_for_date(ticker, date, S=None):
     """Fetch options data for a specific date with caching"""
     print(f"Fetching option chain for {ticker} EXP {date}")
@@ -370,7 +378,7 @@ def fetch_options_for_date(ticker, date, S=None):
         st.error(f"Error fetching options data: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
-@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
+@st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
 def fetch_all_options(ticker):
     """Fetch all available options with caching"""
     print(f"Fetching all options for {ticker}")
@@ -461,7 +469,7 @@ def add_current_price_line(fig, current_price):
         )
     return fig
 
-@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
+@st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
 def get_screener_data(screener_type):
     """Fetch screener data from Yahoo Finance"""
     try:
@@ -1148,7 +1156,7 @@ def fetch_all_options(ticker):
     return combined_calls, combined_puts
 
 # Charts and price fetching
-@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
+@st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
 def get_current_price(ticker):
     """Get current price with fallback logic"""
     print(f"Fetching current price for {ticker}")
@@ -2028,7 +2036,7 @@ def create_donut_chart(call_volume, put_volume):
     return fig
 
 # Greek Calculations
-@st.cache_data(ttl=3600)  # Cache for 1 hour
+@st.cache_data(ttl=3600, show_spinner=False)  # Cache for 1 hour
 def get_risk_free_rate():
     """Fetch the current risk-free rate from the 3-month Treasury Bill yield with caching."""
     try:
@@ -2547,7 +2555,7 @@ def fetch_and_process_multiple_dates(ticker, expiry_dates, process_func):
         return combined_calls, combined_puts
     return pd.DataFrame(), pd.DataFrame()
 
-@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
+@st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
 def get_combined_intraday_data(ticker):
     """Get intraday data with fallback logic"""
     formatted_ticker = ticker.replace('%5E', '^')
@@ -4236,7 +4244,7 @@ def create_max_pain_chart(calls, puts, S):
     
     return fig
 
-@st.cache_data(ttl=get_cache_ttl())  # Cache TTL matches refresh rate
+@st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
 def get_nearest_expiry(available_dates):
     """Get the nearest expiry date from a list of available dates"""
     if not available_dates:
@@ -5864,8 +5872,6 @@ elif st.session_state.current_page == "Calculated Greeks":
 elif st.session_state.current_page == "Dashboard":
     dashboard_container = st.container()
     with dashboard_container:
-        st.empty()  # Clear previous content
-        
         # Create a single input for ticker with refresh button
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -8048,9 +8054,5 @@ is_market_maker_active = (
 # Only auto-refresh if not on market maker tab with active data
 if not is_market_maker_active:
     refresh_rate = float(st.session_state.get('refresh_rate', 10))  # Convert to float
-    if not st.session_state.get("loading_complete", False):
-        st.session_state.loading_complete = True
-        st.rerun()
-    else:
-        time.sleep(refresh_rate)
-        st.rerun()
+    time.sleep(refresh_rate)
+    st.rerun()
