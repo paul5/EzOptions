@@ -4506,6 +4506,9 @@ def create_davi_chart(calls, puts, S):
 
     return fig
 
+# Create main placeholder for page content
+main_placeholder = st.empty()
+
 # Add at the start of each page's container
 if st.session_state.current_page:
     market_status = check_market_status()
@@ -4513,9 +4516,7 @@ if st.session_state.current_page:
         st.warning(market_status)
 
 if st.session_state.current_page == "OI & Volume":
-    main_container = st.container()
-    with main_container:
-        st.empty()  # Clear previous content
+    with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
             user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="options_data_ticker")
@@ -5159,9 +5160,7 @@ if st.session_state.current_page == "OI & Volume":
                             """)
 
 elif st.session_state.current_page == "Gamma Exposure":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
+    with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -5225,9 +5224,7 @@ elif st.session_state.current_page == "Gamma Exposure":
                 st.plotly_chart(fig_bar, use_container_width=True)
 
 elif st.session_state.current_page == "Vanna Exposure":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
+    with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -5291,9 +5288,7 @@ elif st.session_state.current_page == "Vanna Exposure":
                 st.plotly_chart(fig_bar, use_container_width=True)
 
 elif st.session_state.current_page == "Delta Exposure":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
+    with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -5357,9 +5352,7 @@ elif st.session_state.current_page == "Delta Exposure":
                 st.plotly_chart(fig_bar, use_container_width=True)
 
 elif st.session_state.current_page == "Charm Exposure":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
+    with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -5423,9 +5416,7 @@ elif st.session_state.current_page == "Charm Exposure":
                 st.plotly_chart(fig_bar, use_container_width=True)
 
 elif st.session_state.current_page == "Speed Exposure":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
+    with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -5489,9 +5480,7 @@ elif st.session_state.current_page == "Speed Exposure":
                 st.plotly_chart(fig_bar, use_container_width=True)
 
 elif st.session_state.current_page == "Vomma Exposure":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
+    with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -5555,9 +5544,7 @@ elif st.session_state.current_page == "Vomma Exposure":
                 st.plotly_chart(fig_bar, use_container_width=True)
 
 elif st.session_state.current_page == "Exposure by Notional Value":
-    exposure_container = st.container()
-    with exposure_container:
-        st.empty()  # Clear previous content
+    with main_placeholder.container():
         page_name = "notional"  # Use consistent page name for compute_greeks_and_charts
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -5698,9 +5685,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                         st.warning("Vomma data not available.")
 
 elif st.session_state.current_page == "Calculated Greeks":
-    main_container = st.container()
-    with main_container:
-        st.empty()  # Clear previous content
+    with main_placeholder.container():
         st.write("This page calculates delta, gamma, and vanna based on market data.")
         
         col1, col2 = st.columns([0.94, 0.06])
@@ -5825,8 +5810,7 @@ elif st.session_state.current_page == "Calculated Greeks":
                     st.stop()
 
 elif st.session_state.current_page == "Dashboard":
-    dashboard_container = st.container()
-    with dashboard_container:
+    with main_placeholder.container():
         # Create a single input for ticker with refresh button
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -6366,9 +6350,7 @@ elif st.session_state.current_page == "Dashboard":
                     st.stop()
 
 elif st.session_state.current_page == "Max Pain":
-    main_container = st.container()
-    with main_container:
-        st.empty()
+    with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
             user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="max_pain_ticker")
@@ -6431,9 +6413,7 @@ elif st.session_state.current_page == "Max Pain":
                     st.warning("Could not calculate max pain point.")
 
 elif st.session_state.current_page == "IV Surface":
-    main_container = st.container()
-    with main_container:
-        st.empty()
+    with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
             user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="iv_skew_ticker")
@@ -6632,8 +6612,7 @@ elif st.session_state.current_page == "IV Surface":
     st.stop()
 
 elif st.session_state.current_page == "GEX Surface":
-    main_container = st.container()
-    with main_container:
+    with main_placeholder.container():
         # Layout for ticker input and refresh button
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -6847,9 +6826,7 @@ elif st.session_state.current_page == "GEX Surface":
     st.stop()
 
 elif st.session_state.current_page == "Analysis":
-    main_container = st.container()
-    with main_container:
-        st.empty()
+    with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
             user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="analysis_ticker")
@@ -7180,9 +7157,7 @@ elif st.session_state.current_page == "Analysis":
     st.stop()
 
 elif st.session_state.current_page == "Delta-Adjusted Value Index":
-    main_container = st.container()
-    with main_container:
-        st.empty()
+    with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
             user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="davi_ticker")
@@ -7264,9 +7239,7 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
                 st.plotly_chart(fig, use_container_width=True)
 
 elif st.session_state.current_page == "Exposure Heatmap":
-    main_container = st.container()
-    with main_container:
-        st.empty()
+    with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
             user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="exposure_heatmap_ticker")
@@ -7609,9 +7582,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
     st.stop()
 
 elif st.session_state.current_page == "Implied Probabilities":
-    main_container = st.container()
-    with main_container:
-        st.empty()  # Clear previous content
+    with main_placeholder.container():
         
         # Header
         st.title("🎲 Implied Probabilities Analysis")
