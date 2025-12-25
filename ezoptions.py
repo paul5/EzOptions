@@ -2737,6 +2737,8 @@ def reset_session_state():
     # Keep track of keys we want to preserve
     preserved_keys = {
         'current_page', 
+        'previous_page',
+        'loading_complete',
         'initialized', 
         'saved_ticker', 
         'call_color', 
@@ -2764,7 +2766,9 @@ def reset_session_state():
         'rsi_period',
         'fibonacci_levels',
         'vwap_enabled',
-        'use_volume_for_greeks'
+        'use_volume_for_greeks',
+        'delta_adjusted_exposures',
+        'global_selected_expiries'
     }
     
     # Initialize visibility settings if they don't exist
@@ -2810,52 +2814,57 @@ def reset_session_state():
             del st.session_state[key]
 
 # Add near the top with other session state initializations
-if 'selected_expiries' not in st.session_state:
-    st.session_state.selected_expiries = {}
+if 'global_selected_expiries' not in st.session_state:
+    st.session_state.global_selected_expiries = []
 
 @st.fragment
 def expiry_selector_fragment(page_name, available_dates):
     """Fragment for expiry date selection that properly resets"""
     container = st.empty()
     
-    # Initialize session state for this page's selections
-    state_key = f"{page_name}_selected_dates"
+    # Initialize global state if needed
+    if 'global_selected_expiries' not in st.session_state:
+        st.session_state.global_selected_expiries = []
+    
     widget_key = f"{page_name}_expiry_selector"
     
     # Initialize previous selection state if not exists
     if f"{widget_key}_prev" not in st.session_state:
         st.session_state[f"{widget_key}_prev"] = []
     
-    if state_key not in st.session_state:
-        st.session_state[state_key] = []
-    
     with container:
         # For implied probabilities page, use single select
         if page_name == "Implied Probabilities":
-            # Get the first selected date if any, otherwise None
-            current_selection = st.session_state[state_key][0] if st.session_state[state_key] else None
+            # Single select - default to nearest (first available)
+            # Do not use global state for default
+            # Do not update global state
             
-            selected = [st.selectbox(
+            selected_date = st.selectbox(
                 "Select Expiration Date:",
                 options=available_dates,
-                index=available_dates.index(current_selection) if current_selection in available_dates else 0,
+                index=0,
                 key=widget_key
-            )]
+            )
+            selected = [selected_date] if selected_date else []
+            
         else:
-            # For all other pages, use multiselect
+            # Multi select - use global state
+            # Filter global selection to only include available dates
+            default_selection = [d for d in st.session_state.global_selected_expiries if d in available_dates]
+            
             selected = st.multiselect(
                 "Select Expiration Date(s):",
                 options=available_dates,
-                default=st.session_state[state_key],
+                default=default_selection,
                 key=widget_key
             )
-        
-        # Check if selection changed
-        if selected != st.session_state[f"{widget_key}_prev"]:
-            st.session_state[state_key] = selected
-            st.session_state[f"{widget_key}_prev"] = selected.copy()
-            if selected:  # Only rerun if there are selections
-                st.rerun()
+            
+            # Check if selection changed
+            if selected != st.session_state.get(f"{widget_key}_prev"):
+                st.session_state.global_selected_expiries = selected
+                st.session_state[f"{widget_key}_prev"] = selected.copy()
+                if selected:  # Only rerun if there are selections
+                    st.rerun()
     
     return selected, container
 
@@ -2866,10 +2875,10 @@ def handle_page_change(new_page):
         return True
     
     if st.session_state.current_page != new_page:
-        # Clear page-specific state
-        old_state_key = f"{st.session_state.current_page}_selected_dates"
-        if old_state_key in st.session_state:
-            del st.session_state[old_state_key]
+        # Clear page-specific widget state to force default reload
+        old_widget_key = f"{st.session_state.current_page}_expiry_selector"
+        if old_widget_key in st.session_state:
+            del st.session_state[old_widget_key]
             
         if 'expiry_selector_container' in st.session_state:
             st.session_state.expiry_selector_container.empty()
@@ -3276,33 +3285,27 @@ def chart_settings():
         if 'use_volume_for_greeks' not in st.session_state:
             st.session_state.use_volume_for_greeks = False  # Default to Open Interest
         
-        use_volume = st.checkbox(
+        st.checkbox(
             "Use Volume instead of Open Interest for Greek exposures",
             value=st.session_state.use_volume_for_greeks,
+            key='use_volume_for_greeks',
             help="When enabled, Greek exposures (Gamma, Vanna, Delta, Charm, Speed, Vomma) will use Volume instead of Open Interest in calculations"
         )
-        
-        # Update session state when the setting changes
-        if use_volume != st.session_state.use_volume_for_greeks:
-            st.session_state.use_volume_for_greeks = use_volume
 
         # Initialize delta-adjusted exposures setting
         if 'delta_adjusted_exposures' not in st.session_state:
             st.session_state.delta_adjusted_exposures = False  # Default to not delta-adjusted
         
-        delta_adjusted = st.checkbox(
+        st.checkbox(
             "Delta-Adjusted Exposures",
             value=st.session_state.delta_adjusted_exposures,
+            key='delta_adjusted_exposures',
             help="When enabled, all Greek exposures (Gamma, Vanna, Charm, Speed, Vomma) will be multiplied by Delta to show delta-adjusted values"
         )
-        
-        # Update session state when the setting changes
-        if delta_adjusted != st.session_state.delta_adjusted_exposures:
-            st.session_state.delta_adjusted_exposures = delta_adjusted
 
         st.write("Colors:")
-        new_call_color = st.color_picker("Calls", st.session_state.call_color)
-        new_put_color = st.color_picker("Puts", st.session_state.put_color)
+        st.color_picker("Calls", st.session_state.call_color, key='call_color')
+        st.color_picker("Puts", st.session_state.put_color, key='put_color')
         
         # Add intraday chart type selection
         if 'intraday_chart_type' not in st.session_state:
@@ -3311,40 +3314,31 @@ def chart_settings():
         if 'candlestick_type' not in st.session_state:
             st.session_state.candlestick_type = 'Filled'
         
-        intraday_type = st.selectbox(
+        st.selectbox(
             "Intraday Chart Type:",
             options=['Candlestick', 'Line'],
-            index=['Candlestick', 'Line'].index(st.session_state.intraday_chart_type)
+            index=['Candlestick', 'Line'].index(st.session_state.intraday_chart_type),
+            key='intraday_chart_type'
         )
         
         # Only show candlestick type selection when candlestick chart is selected
-        if intraday_type == 'Candlestick':
-            candlestick_type = st.selectbox(
+        if st.session_state.intraday_chart_type == 'Candlestick':
+            st.selectbox(
                 "Candlestick Style:",
                 options=['Filled', 'Hollow', 'Heikin Ashi'],
-                index=['Filled', 'Hollow', 'Heikin Ashi'].index(st.session_state.candlestick_type)
+                index=['Filled', 'Hollow', 'Heikin Ashi'].index(st.session_state.candlestick_type),
+                key='candlestick_type'
             )
-            
-            if candlestick_type != st.session_state.candlestick_type:
-                st.session_state.candlestick_type = candlestick_type
-        
-        # Update session state when intraday chart type changes
-        if intraday_type != st.session_state.intraday_chart_type:
-            st.session_state.intraday_chart_type = intraday_type
 
         if 'show_vix_overlay' not in st.session_state:
             st.session_state.show_vix_overlay = False
         
         # Group VIX settings together
         st.write("VIX Settings:")
-        show_vix = st.checkbox("VIX Overlay", value=st.session_state.show_vix_overlay)
-        if show_vix:
-            new_vix_color = st.color_picker("VIX Color", st.session_state.vix_color)
-            if new_vix_color != st.session_state.vix_color:
-                st.session_state.vix_color = new_vix_color
+        st.checkbox("VIX Overlay", value=st.session_state.show_vix_overlay, key='show_vix_overlay')
         
-        if show_vix != st.session_state.show_vix_overlay:
-            st.session_state.show_vix_overlay = show_vix
+        if st.session_state.show_vix_overlay:
+            st.color_picker("VIX Color", st.session_state.vix_color, key='vix_color')
 
         # Technical Indicators Settings
         st.write("Technical Indicators:")
@@ -3369,14 +3363,11 @@ def chart_settings():
         if 'vwap_enabled' not in st.session_state:
             st.session_state.vwap_enabled = False
         
-        show_technical = st.checkbox("Enable Technical Indicators", value=st.session_state.show_technical_indicators, key="enable_technical_indicators")
+        show_technical = st.checkbox("Enable Technical Indicators", value=st.session_state.show_technical_indicators, key="show_technical_indicators")
         
-        # Update technical indicators toggle immediately
-        if show_technical != st.session_state.show_technical_indicators:
-            st.session_state.show_technical_indicators = show_technical
-            # Clear selected indicators when disabling
-            if not show_technical:
-                st.session_state.selected_indicators = []
+        # Clear selected indicators when disabling
+        if not show_technical and st.session_state.selected_indicators:
+            st.session_state.selected_indicators = []
         
         if show_technical:
             # Available indicators
@@ -3389,19 +3380,15 @@ def chart_settings():
                 "Fibonacci Retracements"
             ]
             
-            selected_indicators = st.multiselect(
+            st.multiselect(
                 "Select Indicators:",
                 available_indicators,
                 default=st.session_state.selected_indicators,
-                key="technical_indicators_selector"
+                key="selected_indicators"
             )
             
-            # Update session state immediately when selection changes
-            if selected_indicators != st.session_state.selected_indicators:
-                st.session_state.selected_indicators = selected_indicators
-            
             # EMA Settings
-            if "EMA (Exponential Moving Average)" in selected_indicators:
+            if "EMA (Exponential Moving Average)" in st.session_state.selected_indicators:
                 st.write("**EMA Settings:**")
                 ema_input = st.text_input(
                     "EMA Periods (comma-separated)",
@@ -3417,7 +3404,7 @@ def chart_settings():
                     st.warning("Invalid EMA periods format. Use comma-separated integers.")
             
             # SMA Settings  
-            if "SMA (Simple Moving Average)" in selected_indicators:
+            if "SMA (Simple Moving Average)" in st.session_state.selected_indicators:
                 st.write("**SMA Settings:**")
                 sma_input = st.text_input(
                     "SMA Periods (comma-separated)",
@@ -3433,43 +3420,29 @@ def chart_settings():
                     st.warning("Invalid SMA periods format. Use comma-separated integers.")
             
             # Bollinger Bands Settings
-            if "Bollinger Bands" in selected_indicators:
+            if "Bollinger Bands" in st.session_state.selected_indicators:
                 st.write("**Bollinger Bands Settings:**")
-                bb_period = st.number_input("Period", min_value=5, max_value=50, value=st.session_state.bollinger_period, key="bb_period_input")
-                bb_std = st.number_input("Standard Deviations", min_value=1.0, max_value=3.0, value=st.session_state.bollinger_std, step=0.1, key="bb_std_input")
-                if bb_period != st.session_state.bollinger_period:
-                    st.session_state.bollinger_period = bb_period
-                if bb_std != st.session_state.bollinger_std:
-                    st.session_state.bollinger_std = bb_std
+                st.number_input("Period", min_value=5, max_value=50, value=st.session_state.bollinger_period, key="bollinger_period")
+                st.number_input("Standard Deviations", min_value=1.0, max_value=3.0, value=st.session_state.bollinger_std, step=0.1, key="bollinger_std")
             
             # RSI Settings
-            if "RSI (Relative Strength Index)" in selected_indicators:
+            if "RSI (Relative Strength Index)" in st.session_state.selected_indicators:
                 st.write("**RSI Settings:**")
-                rsi_period = st.number_input("RSI Period", min_value=5, max_value=30, value=st.session_state.rsi_period, key="rsi_period_input")
-                if rsi_period != st.session_state.rsi_period:
-                    st.session_state.rsi_period = rsi_period
+                st.number_input("RSI Period", min_value=5, max_value=30, value=st.session_state.rsi_period, key="rsi_period")
             
         if 'chart_text_size' not in st.session_state:
             st.session_state.chart_text_size = 15  # Default text size
             
-        new_text_size = st.number_input(
+        st.number_input(
             "Chart Text Size",
             min_value=10,
             max_value=30,
             value=st.session_state.chart_text_size,
             step=1,
-            help="Adjust the size of text in charts (titles, labels, etc.)"
+            help="Adjust the size of text in charts (titles, labels, etc.)",
+            key='chart_text_size'
         )
         
-        # Update session state and trigger rerun if text size changes
-        if new_text_size != st.session_state.chart_text_size:
-            st.session_state.chart_text_size = new_text_size
-        
-        # Update session state and trigger rerun if either color changes
-        if new_call_color != st.session_state.call_color or new_put_color != st.session_state.put_color:
-            st.session_state.call_color = new_call_color
-            st.session_state.put_color = new_put_color
-
         st.write("Show/Hide Elements:")
         # Initialize visibility settings if not already set
         if 'show_calls' not in st.session_state:
@@ -3480,22 +3453,16 @@ def chart_settings():
             st.session_state.show_net = True
 
         # Visibility toggles
-        show_calls = st.checkbox("Show Calls", value=st.session_state.show_calls)
-        show_puts = st.checkbox("Show Puts", value=st.session_state.show_puts)
-        show_net = st.checkbox("Show Net", value=st.session_state.show_net)
-
-        # Update session state when visibility changes
-        if show_calls != st.session_state.show_calls or show_puts != st.session_state.show_puts or show_net != st.session_state.show_net:
-            st.session_state.show_calls = show_calls
-            st.session_state.show_puts = show_puts
-            st.session_state.show_net = show_net
+        st.checkbox("Show Calls", value=st.session_state.show_calls, key='show_calls')
+        st.checkbox("Show Puts", value=st.session_state.show_puts, key='show_puts')
+        st.checkbox("Show Net", value=st.session_state.show_net, key='show_net')
 
         # Initialize strike range in session state (as percentage)
         if 'strike_range' not in st.session_state:
             st.session_state.strike_range = 2.0  # Default 2%
         
         # Add strike range control (as percentage)
-        st.session_state.strike_range = st.number_input(
+        st.number_input(
             "Strike Range (% from current price)",
             min_value=0.1,
             max_value=50.0,
@@ -3503,35 +3470,29 @@ def chart_settings():
             step=0.1,
             format="%.1f",
             help="Percentage range from current price (e.g., 1.0 = ±1%)",
-            key="strike_range_sidebar"
+            key="strike_range"
         )
 
         if 'chart_type' not in st.session_state:
             st.session_state.chart_type = 'Bar'  # Default chart type
 
-        chart_type = st.selectbox(
+        st.selectbox(
             "Chart Type:",
             options=['Bar', 'Horizontal Bar', 'Scatter', 'Line', 'Area'],
-            index=['Bar', 'Horizontal Bar', 'Scatter', 'Line', 'Area'].index(st.session_state.chart_type)
+            index=['Bar', 'Horizontal Bar', 'Scatter', 'Line', 'Area'].index(st.session_state.chart_type),
+            key='chart_type'
         )
-
-        # Update session state when chart type changes
-        if chart_type != st.session_state.chart_type:
-            st.session_state.chart_type = chart_type
 
          
         if 'gex_type' not in st.session_state:
             st.session_state.gex_type = 'Net'  # Default to Net GEX
         
-        gex_type = st.selectbox(
+        st.selectbox(
             "Gamma Exposure Type:",
             options=['Net', 'Absolute'],
-            index=['Net', 'Absolute'].index(st.session_state.gex_type)
+            index=['Net', 'Absolute'].index(st.session_state.gex_type),
+            key='gex_type'
         )
-
-        # Update session state when GEX type changes
-        if gex_type != st.session_state.gex_type:
-            st.session_state.gex_type = gex_type
 
         # Add intraday chart level settings
         st.write("Intraday Chart Levels:")
@@ -3543,32 +3504,26 @@ def chart_settings():
             st.session_state.show_dex_levels = False  # Default to not showing DEX levels
         
         # GEX and DEX level toggles
-        show_gex_levels = st.checkbox("Show GEX Levels", value=st.session_state.show_gex_levels)
-        show_dex_levels = st.checkbox("Show DEX Levels", value=st.session_state.show_dex_levels)
-        
-        # Update session state when level visibility changes
-        if show_gex_levels != st.session_state.show_gex_levels or show_dex_levels != st.session_state.show_dex_levels:
-            st.session_state.show_gex_levels = show_gex_levels
-            st.session_state.show_dex_levels = show_dex_levels
+        st.checkbox("Show GEX Levels", value=st.session_state.show_gex_levels, key='show_gex_levels')
+        st.checkbox("Show DEX Levels", value=st.session_state.show_dex_levels, key='show_dex_levels')
 
         # Add refresh rate control before chart type
         if 'refresh_rate' not in st.session_state:
             st.session_state.refresh_rate = 10  # Default refresh rate
         
-        new_refresh_rate = st.number_input(
+        def on_refresh_rate_change():
+            st.cache_data.clear()
+            
+        st.number_input(
             "Auto-Refresh Rate (seconds)",
             min_value=10,
             max_value=300,
             value=int(st.session_state.refresh_rate),
             step=1,
-            help="How often to auto-refresh the page (minimum 10 seconds)"
+            help="How often to auto-refresh the page (minimum 10 seconds)",
+            key='refresh_rate',
+            on_change=on_refresh_rate_change
         )
-        
-        if new_refresh_rate != st.session_state.refresh_rate:
-            print(f"Changing refresh rate from {st.session_state.refresh_rate} to {new_refresh_rate} seconds")
-            st.session_state.refresh_rate = float(new_refresh_rate)
-            st.cache_data.clear()
-            st.rerun()
 
 # Call the regular function instead of the fragment
 chart_settings()
@@ -4625,8 +4580,8 @@ if st.session_state.current_page == "OI & Volume":
                 with tab1:
                     # Original OI and Volume charts
                     oi_fig, volume_fig = create_oi_volume_charts(all_calls, all_puts, S)
-                    st.plotly_chart(oi_fig, width='stretch')
-                    st.plotly_chart(volume_fig, width='stretch')
+                    st.plotly_chart(oi_fig, use_container_width=True)
+                    st.plotly_chart(volume_fig, use_container_width=True)
                 
                 with tab2:
                     # New: Options flow analysis and visualizations
@@ -4638,17 +4593,17 @@ if st.session_state.current_page == "OI & Volume":
                     
                     with flow_col1:
                         # Show bought vs sold volume
-                        st.plotly_chart(flow_fig, width='stretch')
+                        st.plotly_chart(flow_fig, use_container_width=True)
                         
                         # Show OTM vs ITM volume
-                        st.plotly_chart(money_fig, width='stretch')
+                        st.plotly_chart(money_fig, use_container_width=True)
                     
                     with flow_col2:
                         # Show premium distribution
-                        st.plotly_chart(premium_fig, width='stretch')
+                        st.plotly_chart(premium_fig, use_container_width=True)
                         
                         # Show OTM analysis
-                        st.plotly_chart(otm_fig, width='stretch')
+                        st.plotly_chart(otm_fig, use_container_width=True)
                     
                     # Summary metrics display
                     st.subheader("Options Flow Summary")
@@ -4690,7 +4645,7 @@ if st.session_state.current_page == "OI & Volume":
                     st.dataframe(
                         summary_df.style.map(lambda val: f'color: {st.session_state.call_color if val == "Call" else st.session_state.put_color}', subset=['Type']),
                         hide_index=True,
-                        width='stretch'
+                        use_container_width=True
                     )
                     # Calculate and display put/call ratio
                     put_call_ratio = flow_data['puts']['bought']['volume'] / max(flow_data['calls']['bought']['volume'], 1)
@@ -4880,7 +4835,7 @@ if st.session_state.current_page == "OI & Volume":
                         )
                     )
                     
-                    st.plotly_chart(itm_premium_fig, width='stretch')
+                    st.plotly_chart(itm_premium_fig, use_container_width=True)
                     
                     # Add additional premium insights with ITM flow details
                     st.markdown("### Premium Insights")
@@ -5154,15 +5109,15 @@ if st.session_state.current_page == "OI & Volume":
                                     chart_col1, chart_col2 = st.columns(2)
                                     
                                     with chart_col1:
-                                        st.plotly_chart(fig_pie, width='stretch')
+                                        st.plotly_chart(fig_pie, use_container_width=True)
                                     
                                     with chart_col2:
-                                        st.plotly_chart(fig_bar, width='stretch')
+                                        st.plotly_chart(fig_bar, use_container_width=True)
                                 
                                 # Optional: Show data table in collapsible section
                                 with st.expander("📋 View Raw Data Table", expanded=False):
                                     if not summary_data['raw_data'].empty:
-                                        st.dataframe(summary_data['raw_data'], width='stretch')
+                                        st.dataframe(summary_data['raw_data'], use_container_width=True)
                                     else:
                                         st.warning("No data available in the table.")
                             else:
@@ -5267,7 +5222,7 @@ elif st.session_state.current_page == "Gamma Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, width='stretch')
+                st.plotly_chart(fig_bar, use_container_width=True)
 
 elif st.session_state.current_page == "Vanna Exposure":
     exposure_container = st.container()
@@ -5597,7 +5552,7 @@ elif st.session_state.current_page == "Vomma Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, width='stretch')
+                st.plotly_chart(fig_bar, use_container_width=True)
 
 elif st.session_state.current_page == "Exposure by Notional Value":
     exposure_container = st.container()
@@ -5698,7 +5653,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "GEX_notional" in all_calls.columns:
                         title = f"GEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_gex = create_exposure_bar_chart(all_calls, all_puts, "GEX_notional", title, S)
-                        st.plotly_chart(fig_gex, width='stretch')
+                        st.plotly_chart(fig_gex, use_container_width=True)
                     else:
                         st.warning("GEX data not available.")
                 
@@ -5706,7 +5661,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "VEX_notional" in all_calls.columns:
                         title = f"VEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_vex = create_exposure_bar_chart(all_calls, all_puts, "VEX_notional", title, S)
-                        st.plotly_chart(fig_vex, width='stretch')
+                        st.plotly_chart(fig_vex, use_container_width=True)
                     else:
                         st.warning("VEX data not available.")
                 
@@ -5714,7 +5669,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "DEX_notional" in all_calls.columns:
                         title = f"DEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_dex = create_exposure_bar_chart(all_calls, all_puts, "DEX_notional", title, S)
-                        st.plotly_chart(fig_dex, width='stretch')
+                        st.plotly_chart(fig_dex, use_container_width=True)
                     else:
                         st.warning("DEX data not available.")
                 
@@ -5722,7 +5677,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "Charm_notional" in all_calls.columns:
                         title = f"Charm Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_charm = create_exposure_bar_chart(all_calls, all_puts, "Charm_notional", title, S)
-                        st.plotly_chart(fig_charm, width='stretch')
+                        st.plotly_chart(fig_charm, use_container_width=True)
                     else:
                         st.warning("Charm data not available.")
                 
@@ -5730,7 +5685,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "Speed_notional" in all_calls.columns:
                         title = f"Speed Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_speed = create_exposure_bar_chart(all_calls, all_puts, "Speed_notional", title, S)
-                        st.plotly_chart(fig_speed, width='stretch')
+                        st.plotly_chart(fig_speed, use_container_width=True)
                     else:
                         st.warning("Speed data not available.")
                 
@@ -5738,7 +5693,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     if "Vomma_notional" in all_calls.columns:
                         title = f"Vomma Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
                         fig_vomma = create_exposure_bar_chart(all_calls, all_puts, "Vomma_notional", title, S)
-                        st.plotly_chart(fig_vomma, width='stretch')
+                        st.plotly_chart(fig_vomma, use_container_width=True)
                     else:
                         st.warning("Vomma data not available.")
 
@@ -5862,7 +5817,7 @@ elif st.session_state.current_page == "Calculated Greeks":
                             st.dataframe(df[['contractSymbol', 'strike', 'impliedVolatility', 'calc_delta', 'calc_gamma', 'calc_vanna']])
                             fig = px.scatter(df, x="strike", y="calc_delta", title=f"{typ}: Delta vs. Strike",
                                          labels={"strike": "Strike", "calc_delta": "Calculated Delta"})
-                            st.plotly_chart(fig, width='stretch', key=f"Calculated Greeks_{typ.lower()}_scatter")
+                            st.plotly_chart(fig, use_container_width=True, key=f"Calculated Greeks_{typ.lower()}_scatter")
                         except Exception as e:
                             st.error(f"Error displaying {typ} data: {str(e)}")
                 else:
@@ -6386,7 +6341,7 @@ elif st.session_state.current_page == "Dashboard":
                             st.markdown("---")
                     # Display selected charts
                     if "Intraday Price" in selected_charts:
-                        st.plotly_chart(fig_intraday, width='stretch', key="Dashboard_intraday_chart")
+                        st.plotly_chart(fig_intraday, use_container_width=True, key="Dashboard_intraday_chart")
                     
                     supplemental_charts = []
                     for chart, fig in [
@@ -6404,7 +6359,7 @@ elif st.session_state.current_page == "Dashboard":
                         cols = st.columns(2)
                         for j, chart in enumerate(supplemental_charts[i:i+2]):
                             if chart is not None:
-                                cols[j].plotly_chart(chart, width='stretch')
+                                cols[j].plotly_chart(chart, use_container_width=True)
 
                 else:
                     st.warning("Please select an expiration date to view the dashboard.")
@@ -6471,7 +6426,7 @@ elif st.session_state.current_page == "Max Pain":
                     # Create and display the max pain chart
                     fig = create_max_pain_chart(all_calls, all_puts, S)
                     if fig is not None:
-                        st.plotly_chart(fig, width='stretch')
+                        st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.warning("Could not calculate max pain point.")
 
@@ -6510,16 +6465,8 @@ elif st.session_state.current_page == "IV Surface":
                 st.warning("No options data available for this ticker.")
                 st.stop()
 
-            # Multiselect for expiration dates with no default selection
-            selected_expiry_dates = st.multiselect(
-                "Select Expiration Dates (1 for 2D chart, 2+ for 3D surface):",
-                options=available_dates,
-                default=None,  # Explicitly set to None to avoid pre-selection
-                key="iv_date_selector"
-            )
-
-            # Store the user's selection
-            st.session_state.iv_selected_dates = selected_expiry_dates
+            # Use shared expiry selector
+            selected_expiry_dates, _ = expiry_selector_fragment("IV Surface", available_dates)
 
             # Proceed only if the user has selected at least one date
             if not selected_expiry_dates:
@@ -6678,7 +6625,7 @@ elif st.session_state.current_page == "IV Surface":
                             height=800
                         )
 
-                    st.plotly_chart(fig, width='stretch')
+                    st.plotly_chart(fig, use_container_width=True)
 
             except Exception as e:
                 st.error(f"Error generating chart: {str(e)}")
@@ -6723,16 +6670,8 @@ elif st.session_state.current_page == "GEX Surface":
                 st.warning("No options data available for this ticker.")
                 st.stop()
 
-            # Multiselect for expiration dates with no default selection
-            selected_expiry_dates = st.multiselect(
-                "Select Expiration Dates (1 for 2D chart, 2+ for 3D surface):",
-                options=available_dates,
-                default=None,
-                key="gex_date_selector"
-            )
-
-            # Store the user's selection
-            st.session_state.gex_selected_dates = selected_expiry_dates
+            # Use shared expiry selector
+            selected_expiry_dates, _ = expiry_selector_fragment("GEX Surface", available_dates)
 
             # Proceed only if the user has selected at least one date
             if not selected_expiry_dates:
@@ -6901,7 +6840,7 @@ elif st.session_state.current_page == "GEX Surface":
                             height=800
                         )
 
-                    st.plotly_chart(fig, width='stretch')
+                    st.plotly_chart(fig, use_container_width=True)
 
             except Exception as e:
                 st.error(f"Error generating chart: {str(e)}")
@@ -7089,7 +7028,7 @@ elif st.session_state.current_page == "Analysis":
             fig.update_yaxes(range=[0, 100], row=2, col=1)
 
             # Display technical analysis chart
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, use_container_width=True)
             
             # Create MACD chart
             macd_fig = make_subplots(rows=1, cols=1)
@@ -7135,7 +7074,7 @@ elif st.session_state.current_page == "Analysis":
             )
             
             # Display MACD chart
-            st.plotly_chart(macd_fig, width='stretch')
+            st.plotly_chart(macd_fig, use_container_width=True)
             
             # Historical volatility chart
             vol_fig = go.Figure()
@@ -7170,7 +7109,7 @@ elif st.session_state.current_page == "Analysis":
             )
             
             # Display volatility chart
-            st.plotly_chart(vol_fig, width='stretch')
+            st.plotly_chart(vol_fig, use_container_width=True)
 
             # Add trend indicator section
             st.subheader("Technical Indicators Summary")
@@ -7236,7 +7175,7 @@ elif st.session_state.current_page == "Analysis":
 
             weekday_returns = calculate_annualized_return(historical_data, period)
             weekday_fig = create_weekday_returns_chart(weekday_returns)
-            st.plotly_chart(weekday_fig, width='stretch')
+            st.plotly_chart(weekday_fig, use_container_width=True)
 
     st.stop()
 
@@ -7322,7 +7261,7 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
                     all_puts['calc_delta'] = all_puts.apply(lambda row: compute_delta(row, "p"), axis=1)
 
                 fig = create_davi_chart(all_calls, all_puts, S)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, use_container_width=True)
 
 elif st.session_state.current_page == "Exposure Heatmap":
     main_container = st.container()
@@ -7360,23 +7299,8 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     st.warning("No options data available for this ticker.")
                     st.stop()
                 
-                # Calculate default selection: dates within 1 week
-                from datetime import datetime, timedelta
-                today = datetime.now().date()
-                one_week_later = today + timedelta(days=7)
-                default_dates = [d for d in available_dates if pd.to_datetime(d).date() <= one_week_later]
-                
-                # If no dates within a week, use first 3 dates
-                if not default_dates:
-                    default_dates = available_dates[:min(3, len(available_dates))]
-                
-                # Expiry date selection
-                selected_expiry_dates = st.multiselect(
-                    "Select Expiration Dates:",
-                    options=available_dates,
-                    default=default_dates,
-                    key="exposure_heatmap_expiry_multi"
-                )
+                # Use shared expiry selector
+                selected_expiry_dates, _ = expiry_selector_fragment("Exposure Heatmap", available_dates)
                 
                 if not selected_expiry_dates:
                     st.warning("Please select at least one expiration date")
@@ -7937,7 +7861,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                     
                     if prob_data:
                         prob_df_display = pd.DataFrame(prob_data)
-                        st.dataframe(prob_df_display, width='stretch')
+                        st.dataframe(prob_df_display, use_container_width=True)
                     
                     # Explanatory text
                     st.markdown("""
@@ -7961,7 +7885,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                     # Create comprehensive chart
                     if not prob_df.empty:
                         fig = create_implied_probabilities_chart(prob_df, S, prob_16_data, prob_30_data, implied_move_data)
-                        st.plotly_chart(fig, width='stretch')
+                        st.plotly_chart(fig, use_container_width=True)
                     else:
                         st.warning("Could not calculate probability distribution.")
                 
@@ -8007,9 +7931,9 @@ elif st.session_state.current_page == "Implied Probabilities":
 
                         figure.update_xaxes(range=[S-(S*0.025),S+(S*0.025)])
 
-                        st.dataframe(display_df, width='stretch')
+                        st.dataframe(display_df, use_container_width=True)
                         st.subheader("Detailed Probability Visualization")
-                        st.plotly_chart(figure, width='stretch')
+                        st.plotly_chart(figure, use_container_width=True)
                     
                     # Additional metrics
                     if implied_move_data:
