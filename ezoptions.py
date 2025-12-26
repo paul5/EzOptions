@@ -559,7 +559,7 @@ def create_weekday_returns_chart(returns):
             text='Annualized Return Rate by Weekday',
             x=0,
             xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         xaxis_title=dict(
             text='Weekday',
@@ -690,7 +690,7 @@ def create_option_flow_charts(flow_data, title="Options Flow Analysis"):
             text=title,
             x=0,
             xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         xaxis_title=dict(
             text='Trade Direction',
@@ -731,7 +731,7 @@ def create_option_flow_charts(flow_data, title="Options Flow Analysis"):
             text="OTM vs ITM Volume",
             x=0,
             xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         xaxis_title=dict(
             text='Moneyness',
@@ -767,13 +767,13 @@ def create_option_flow_charts(flow_data, title="Options Flow Analysis"):
             text="Total Premium Flow",
             x=0,
             xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         legend=dict(font=dict(size=st.session_state.chart_text_size)),
         annotations=[dict(
             text=premium_text,
             x=0.5, y=0.5,
-            font=dict(size=st.session_state.chart_text_size + 4),
+            font=dict(size=st.session_state.chart_text_size + 3),
             showarrow=False
         )],
         template="plotly_dark"
@@ -825,7 +825,7 @@ def create_option_flow_charts(flow_data, title="Options Flow Analysis"):
             text="OTM Options Bought vs Sold",
             x=0,
             xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         xaxis_title=dict(
             text='Volume',
@@ -899,7 +899,7 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
             text="Call Premium Heatmap",
             x=0,
             xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         xaxis_title=dict(
             text='Strike Price',
@@ -950,7 +950,7 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
             text="Put Premium Heatmap",
             x=0,
             xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         xaxis_title=dict(
             text='Strike Price',
@@ -1026,7 +1026,7 @@ def create_premium_heatmap(calls_df, puts_df, filtered_strikes, selected_expiry_
             text="Call Premium Heatmap",
             x=0,
             xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         xaxis_title=dict(
             text='Strike Price',
@@ -1073,7 +1073,7 @@ def create_premium_heatmap(calls_df, puts_df, filtered_strikes, selected_expiry_
             text="Put Premium Heatmap",
             x=0,
             xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 8)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         xaxis_title=dict(
             text='Strike Price',
@@ -1441,7 +1441,7 @@ def create_oi_volume_charts(calls, puts, S):
                 text=oi_title_with_totals,
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             xaxis_title=dict(
                 text='Open Interest',
@@ -1472,7 +1472,7 @@ def create_oi_volume_charts(calls, puts, S):
                 text=oi_title_with_totals,
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             xaxis_title=dict(
                 text='Strike Price',
@@ -1685,7 +1685,7 @@ def create_oi_volume_charts(calls, puts, S):
                 text=volume_title_with_totals,
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             xaxis_title=dict(
                 text='Volume',
@@ -1716,7 +1716,7 @@ def create_oi_volume_charts(calls, puts, S):
                 text=volume_title_with_totals,
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             xaxis_title=dict(
                 text='Strike Price',
@@ -1957,7 +1957,7 @@ def create_volume_by_strike_chart(calls, puts, S):
                 text=volume_title_with_totals,
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             xaxis_title=dict(
                 text='Volume',
@@ -1988,7 +1988,7 @@ def create_volume_by_strike_chart(calls, puts, S):
                 text=volume_title_with_totals,
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             xaxis_title=dict(
                 text='Strike Price',
@@ -2030,7 +2030,7 @@ def create_donut_chart(call_volume, put_volume):
     fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3)])
     fig.update_layout(
         title_text='Call vs Put Volume Ratio',
-        title_font_size=st.session_state.chart_text_size + 8,  # Title slightly larger
+        title_font_size=st.session_state.chart_text_size + 3,  # Title slightly larger
         showlegend=True,
         legend=dict(
             font=dict(size=st.session_state.chart_text_size)
@@ -2481,7 +2481,7 @@ def create_implied_probabilities_chart(prob_df, S, prob_16_data, prob_30_data, i
                 text="Implied Probabilities Analysis",
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             showlegend=False,  # No need for legend
             template="plotly_dark",
@@ -2491,7 +2491,7 @@ def create_implied_probabilities_chart(prob_df, S, prob_16_data, prob_30_data, i
         
         # Update subplot titles
         for i in fig['layout']['annotations']:
-            i['font'] = dict(size=st.session_state.chart_text_size + 4)
+            i['font'] = dict(size=st.session_state.chart_text_size + 3)
         
         # Update axes
         fig.update_xaxes(
@@ -3118,7 +3118,7 @@ def create_market_maker_charts(summary_data):
             text="Market Maker Call/Put Volume Distribution",
             x=0.5,
             xanchor='center',
-            font=dict(size=18)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         template="plotly_dark",
         height=500,  # Increased height for bigger chart
@@ -3143,15 +3143,15 @@ def create_market_maker_charts(summary_data):
             text="Market Maker Volume Breakdown",
             x=0.5,
             xanchor='center',
-            font=dict(size=18)
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
         xaxis_title=dict(
             text="Option Type",
-            font=dict(size=14)
+            font=dict(size=st.session_state.chart_text_size)
         ),
         yaxis_title=dict(
             text="Volume",
-            font=dict(size=14)
+            font=dict(size=st.session_state.chart_text_size)
         ),
         template="plotly_dark",
         height=500,  # Increased height for bigger chart
@@ -3986,7 +3986,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 xref="paper",
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)  # Title slightly larger
+                font=dict(size=st.session_state.chart_text_size + 3)  # Title slightly larger
             ),
             xaxis_title=dict(
                 text=f"{title} ({metric_name})",
@@ -4018,7 +4018,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 xref="paper",
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)  # Title slightly larger
+                font=dict(size=st.session_state.chart_text_size + 3)  # Title slightly larger
             ),
             xaxis_title=dict(
                 text='Strike Price',
@@ -4220,7 +4220,7 @@ def create_max_pain_chart(calls, puts, S):
     fig.update_layout(
         title=dict(
             text='Max Pain',
-            font=dict(size=st.session_state.chart_text_size + 8)  # Title slightly larger
+            font=dict(size=st.session_state.chart_text_size + 3)  # Title slightly larger
         ),
         xaxis_title=dict(
             text='Strike Price',
@@ -4509,7 +4509,7 @@ def create_davi_chart(calls, puts, S):
                 text=title_with_totals,
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             xaxis_title=dict(
                 text='DAVI',
@@ -4540,7 +4540,7 @@ def create_davi_chart(calls, puts, S):
                 text=title_with_totals,
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 8)
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             xaxis_title=dict(
                 text='Strike Price',
@@ -4568,14 +4568,14 @@ def create_davi_chart(calls, puts, S):
 
     return fig
 
-# Create main placeholder for page content
-main_placeholder = st.empty()
-
 # Add at the start of each page's container
 if st.session_state.current_page:
     market_status = check_market_status()
     if market_status:
         st.warning(market_status)
+
+# Create main placeholder for page content
+main_placeholder = st.empty()
 
 if st.session_state.current_page == "OI & Volume":
     with main_placeholder.container():
@@ -7065,7 +7065,7 @@ elif st.session_state.current_page == "Analysis":
                     text=f"Technical Analysis for {ticker}",
                     x=0,
                     xanchor='left',
-                    font=dict(size=st.session_state.chart_text_size + 8)
+                    font=dict(size=st.session_state.chart_text_size + 3)
                 ),
                 showlegend=True,
                 height=800,  # Reduced to better fit with weekday returns
@@ -7513,7 +7513,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                             text=f"Call {selected_exposure_name}{delta_adjusted_label} ({metric_name})",
                             x=0,
                             xanchor='left',
-                            font=dict(size=st.session_state.chart_text_size + 8)
+                            font=dict(size=st.session_state.chart_text_size + 3)
                         ),
                         xaxis_title=dict(
                             text='Expiration Date',
@@ -7570,7 +7570,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                             text=f"Put {selected_exposure_name}{delta_adjusted_label} ({metric_name})",
                             x=0,
                             xanchor='left',
-                            font=dict(size=st.session_state.chart_text_size + 8)
+                            font=dict(size=st.session_state.chart_text_size + 3)
                         ),
                         xaxis_title=dict(
                             text='Expiration Date',
@@ -7657,7 +7657,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                             text=f"Net {selected_exposure_name}{delta_adjusted_label} ({metric_name})",
                             x=0,
                             xanchor='left',
-                            font=dict(size=st.session_state.chart_text_size + 8)
+                            font=dict(size=st.session_state.chart_text_size + 3)
                         ),
                         xaxis_title=dict(
                             text='Expiration Date',
