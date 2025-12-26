@@ -413,6 +413,14 @@ def fetch_all_options(ticker):
 
 def clear_page_state():
     """Clear all page-specific content and containers"""
+    # Clear containers stored in session state
+    for key in list(st.session_state.keys()):
+        if key.endswith('_container') and hasattr(st.session_state[key], 'empty'):
+            try:
+                st.session_state[key].empty()
+            except:
+                pass
+
     for key in list(st.session_state.keys()):
         if key.startswith(('container_', 'chart_', 'table_', 'page_')):
             del st.session_state[key]
@@ -2882,6 +2890,9 @@ def handle_page_change(new_page):
             
         if 'expiry_selector_container' in st.session_state:
             st.session_state.expiry_selector_container.empty()
+        
+        # Clear previous page state
+        clear_page_state()
         
         st.session_state.current_page = new_page
         reset_session_state()
