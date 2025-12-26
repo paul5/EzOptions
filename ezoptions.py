@@ -317,6 +317,23 @@ def format_ticker(ticker):
         return "^RUT"
     return ticker
 
+def format_large_number(num):
+    """Format large numbers with suffixes (K, M, B, T)"""
+    if num is None:
+        return "0"
+    
+    abs_num = abs(num)
+    if abs_num >= 1e12:
+        return f"{num/1e12:.2f}T"
+    elif abs_num >= 1e9:
+        return f"{num/1e9:.2f}B"
+    elif abs_num >= 1e6:
+        return f"{num/1e6:.2f}M"
+    elif abs_num >= 1e3:
+        return f"{num/1e3:.2f}K"
+    else:
+        return f"{num:,.0f}"
+
 def check_market_status():
     """Check if we're in pre-market, market hours, or post-market"""
     # Get current time in PST for market checks
@@ -6121,7 +6138,7 @@ elif st.session_state.current_page == "Dashboard":
                             # Calculate Net or Absolute GEX based on gex_type setting
                             if st.session_state.gex_type == 'Net':
                                 # Net GEX: Calls positive, Puts negative
-                                net_gex = calls_filtered.groupby('strike')['GEX'].sum() - puts_filtered.groupby('strike')['GEX'].sum()
+                                net_gex = calls_filtered.groupby('strike')['GEX'].sum().sub(puts_filtered.groupby('strike')['GEX'].sum(), fill_value=0)
                             else:  # Absolute
                                 # Absolute GEX: Take the larger absolute value at each strike
                                 calls_gex = calls_filtered.groupby('strike')['GEX'].sum()
@@ -6178,7 +6195,7 @@ elif st.session_state.current_page == "Dashboard":
                                         )
                                         
                                         # Add text annotation positioned to the right of the chart
-                                        gex_label = f"GEX {row.GEX:,.0f}"
+                                        gex_label = f"GEX {format_large_number(row.GEX)}"
                                         fig_intraday.add_annotation(
                                             x=0.92,
                                             y=row.strike,
@@ -6201,9 +6218,12 @@ elif st.session_state.current_page == "Dashboard":
                             dex_options_df = pd.concat([calls, puts]).dropna(subset=['DEX'])
                             
                             if not dex_options_df.empty:
-                                # Use absolute DEX values for ranking (similar to GEX logic)
-                                dex_options_df['abs_DEX'] = abs(dex_options_df['DEX'])
-                                top5_dex = dex_options_df.nlargest(5, 'abs_DEX')[['strike', 'DEX', 'OptionType']]
+                                # Group by strike to get Net DEX (consistent with bar chart)
+                                net_dex = dex_options_df.groupby('strike')['DEX'].sum().reset_index()
+                                net_dex['abs_DEX'] = abs(net_dex['DEX'])
+                                
+                                # Get top 5 by absolute Net DEX
+                                top5_dex = net_dex.nlargest(5, 'abs_DEX')
                                 top5_dex['distance'] = abs(top5_dex['strike'] - current_price)
                                 nearest_3_dex = top5_dex.nsmallest(3, 'distance')
                                 max_dex = abs(top5_dex['DEX']).max()
@@ -6213,8 +6233,8 @@ elif st.session_state.current_page == "Dashboard":
                                         # Calculate intensity based on DEX value relative to max
                                         intensity = max(0.6, min(1.0, abs(row.DEX) / max_dex))
                                         
-                                        # Get base color from session state - use different style for DEX
-                                        base_color = st.session_state.call_color if row.OptionType == 'Call' else st.session_state.put_color
+                                        # Get base color from session state - use call color for positive DEX, put color for negative
+                                        base_color = st.session_state.call_color if row.DEX >= 0 else st.session_state.put_color
                                         
                                         # Convert hex to RGB
                                         rgb = tuple(int(base_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
@@ -6243,7 +6263,7 @@ elif st.session_state.current_page == "Dashboard":
                                         fig_intraday.add_annotation(
                                             x=0.92,
                                             y=row.strike,
-                                            text=f"DEX {row.DEX:,.0f}",
+                                            text=f"DEX {format_large_number(row.DEX)}",
                                             font=dict(color=color, size=st.session_state.chart_text_size - 2),
                                             showarrow=False,
                                             xref="paper",  # Use paper coordinates for x
