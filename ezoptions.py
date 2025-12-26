@@ -2677,17 +2677,6 @@ def get_combined_intraday_data(ticker):
                 price = gspc.fast_info.get("lastPrice")
             if price is not None:
                 latest_price = round(float(price), 2)
-                # Update the last data point with current price
-                last_idx = intraday_data.index[-1]
-                new_idx = last_idx + pd.Timedelta(minutes=1)  # Add 1 minute to ensure it shows as latest
-                new_row = pd.DataFrame({
-                    'Open': [latest_price],
-                    'High': [latest_price],
-                    'Low': [latest_price],
-                    'Close': [latest_price],
-                    'Volume': [0]
-                }, index=[new_idx])
-                intraday_data = pd.concat([intraday_data, new_row])
         except Exception as e:
             print(f"Error fetching SPX price: {str(e)}")
             latest_price = yahoo_last_price
@@ -3373,17 +3362,6 @@ def chart_settings():
             help="When enabled, all Greek exposures (Gamma, Vanna, Charm, Speed, Vomma) will be multiplied by Delta to show delta-adjusted values"
         )
 
-        # Greek Exposure Move Setting
-        if 'greek_exposure_move_type' not in st.session_state:
-            st.session_state.greek_exposure_move_type = "Per $1 Move"
-
-        st.radio(
-            "Greek Exposure Move:",
-            options=["Per $1 Move", "Per 1% Move"],
-            key="greek_exposure_move_type",
-            help="Choose whether Greek exposures (GEX, Speed) are calculated per $1 move or per 1% move in the underlying price."
-        )
-
         st.write("Colors:")
         st.color_picker("Calls", st.session_state.call_color, key='call_color')
         st.color_picker("Puts", st.session_state.put_color, key='put_color')
@@ -3729,10 +3707,8 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
 
     # Determine move scaling factor
-    move_type = st.session_state.get('greek_exposure_move_type', 'Per $1 Move')
-    move_scale = 1.0
-    if move_type == 'Per 1% Move':
-        move_scale = 0.01 * S
+    # Always use Per 1% Move
+    move_scale = 0.01 * S
 
     # GEX = Gamma * Volume/OI * Contract Size * Spot Price (Dollar Gamma per $1 move in underlying)
     calls["GEX"] = calls["calc_gamma"] * calls[volume_metric] * 100 * S * move_scale
@@ -5706,10 +5682,8 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                          delta_adj = df['calc_delta'].abs()
 
                     # Determine move scaling factor
-                    move_type = st.session_state.get('greek_exposure_move_type', 'Per $1 Move')
-                    move_scale = 1.0
-                    if move_type == 'Per 1% Move':
-                        move_scale = 0.01 * spot_price
+                    # Always use Per 1% Move
+                    move_scale = 0.01 * spot_price
                     
                     # Calculate notional exposure from raw greek values
                     # Notional = Greek Exposure (per $1 move) × Contract Premium (to weight by notional value)
@@ -6290,9 +6264,14 @@ elif st.session_state.current_page == "Dashboard":
                             y_max = center * 1.01
 
                         # Update layout
+                        # Rename SPX to ^SPX for display
+                        display_ticker = ticker
+                        if ticker in ['SPX', '%5ESPX'] or ticker.replace('%5E', '^') == '^SPX':
+                            display_ticker = '^SPX'
+
                         fig_intraday.update_layout(
                             title=dict(
-                                text=f"Intraday Price for {ticker}",
+                                text=f"Intraday Price for {display_ticker}",
                                 font=dict(size=st.session_state.chart_text_size + 4)
                             ),
                             height=600,
@@ -6359,7 +6338,12 @@ elif st.session_state.current_page == "Dashboard":
                             
                             # Get additional market data
                             try:
-                                stock_info = yf.Ticker(st.session_state.saved_ticker).info
+                                # Use ^GSPC for SPX info
+                                info_ticker = st.session_state.saved_ticker
+                                if info_ticker in ['^SPX', 'SPX', '%5ESPX']:
+                                    info_ticker = '^GSPC'
+                                    
+                                stock_info = yf.Ticker(info_ticker).info
                                 prev_close = stock_info.get('previousClose', 0)
                                 day_high = stock_info.get('dayHigh', 0)
                                 day_low = stock_info.get('dayLow', 0)
@@ -6963,7 +6947,12 @@ elif st.session_state.current_page == "Analysis":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            # Use ^GSPC for SPX historical data
+            analysis_ticker = ticker
+            if ticker in ['^SPX', 'SPX', '%5ESPX']:
+                analysis_ticker = '^GSPC'
+                
+            stock = yf.Ticker(analysis_ticker)
             # Fetch 1 year of historical data for maximum analysis period
             historical_data = stock.history(period="1y", interval="1d")
             
