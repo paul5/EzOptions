@@ -7467,6 +7467,29 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 else:
                     net_exposure = call_exposure - put_exposure
                 
+                # Normalize matrices per column (expiration) for coloring
+                call_exposure_norm = np.zeros_like(call_exposure)
+                put_exposure_norm = np.zeros_like(put_exposure)
+                net_exposure_norm = np.zeros_like(net_exposure)
+                
+                # Normalize Call Exposure
+                for col in range(call_exposure.shape[1]):
+                    max_val = np.max(call_exposure[:, col])
+                    if max_val > 0:
+                        call_exposure_norm[:, col] = call_exposure[:, col] / max_val
+                        
+                # Normalize Put Exposure
+                for col in range(put_exposure.shape[1]):
+                    max_val = np.max(put_exposure[:, col])
+                    if max_val > 0:
+                        put_exposure_norm[:, col] = put_exposure[:, col] / max_val
+
+                # Normalize Net Exposure
+                for col in range(net_exposure.shape[1]):
+                    max_abs = np.max(np.abs(net_exposure[:, col]))
+                    if max_abs > 0:
+                        net_exposure_norm[:, col] = net_exposure[:, col] / max_abs
+                
                 # Format dates for display
                 date_labels = [d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d) for d in dates_with_data]
                 
@@ -7485,7 +7508,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 # Call Exposure Heatmap
                 if st.session_state.show_calls:
                     fig_calls = go.Figure(data=go.Heatmap(
-                        z=call_exposure,
+                        z=call_exposure_norm,
                         x=date_labels,
                         y=filtered_strikes,
                         text=call_exposure,
@@ -7495,7 +7518,9 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         hoverongaps=False,
                         name="Call Exposure",
                         showscale=False,
-                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Exposure: %{z:,.0f}<extra></extra>'
+                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Exposure: %{text:,.0f}<extra></extra>',
+                        zmin=0,
+                        zmax=1
                     ))
                     
                     fig_calls.add_hline(
@@ -7542,7 +7567,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 # Put Exposure Heatmap
                 if st.session_state.show_puts:
                     fig_puts = go.Figure(data=go.Heatmap(
-                        z=put_exposure,
+                        z=put_exposure_norm,
                         x=date_labels,
                         y=filtered_strikes,
                         text=put_exposure,
@@ -7552,7 +7577,9 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         hoverongaps=False,
                         name="Put Exposure",
                         showscale=False,
-                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Exposure: %{z:,.0f}<extra></extra>'
+                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Exposure: %{text:,.0f}<extra></extra>',
+                        zmin=0,
+                        zmax=1
                     ))
                     
                     fig_puts.add_hline(
@@ -7598,48 +7625,20 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 
                 # Net Exposure Heatmap
                 if st.session_state.show_net:
-                    # Calculate min/max to determine zero position for asymmetric colorscale
-                    net_min = np.min(net_exposure) if net_exposure.size > 0 else 0
-                    net_max = np.max(net_exposure) if net_exposure.size > 0 else 0
-                    
-                    # Ensure range includes 0
-                    val_min = min(net_min, 0)
-                    val_max = max(net_max, 0)
-                    
-                    # Construct asymmetric colorscale
-                    if val_max == val_min:
-                        colorscale = [[0, 'black'], [1, 'black']]
-                    else:
-                        zero_pos = (0 - val_min) / (val_max - val_min)
-                        colorscale = []
-                        
-                        if val_min < 0:
-                            colorscale.append([0, put_color])
-                        else:
-                            colorscale.append([0, 'black'])
-                            
-                        if 0 < zero_pos < 1:
-                            colorscale.append([zero_pos, 'black'])
-                            
-                        if val_max > 0:
-                            colorscale.append([1, call_color])
-                        else:
-                            colorscale.append([1, 'black'])
-                    
                     fig_net = go.Figure(data=go.Heatmap(
-                        z=net_exposure,
+                        z=net_exposure_norm,
                         x=date_labels,
                         y=filtered_strikes,
                         text=net_exposure,
                         texttemplate='%{text:.2s}',
                         textfont=dict(size=st.session_state.chart_text_size),
-                        colorscale=colorscale,
+                        colorscale=[[0, put_color], [0.5, 'black'], [1, call_color]],
                         hoverongaps=False,
                         name="Net Exposure",
                         showscale=False,
-                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Net Exposure: %{z:,.0f}<extra></extra>',
-                        zmin=val_min,
-                        zmax=val_max
+                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Net Exposure: %{text:,.0f}<extra></extra>',
+                        zmin=-1,
+                        zmax=1
                     ))
                     
                     fig_net.add_hline(
@@ -7703,7 +7702,6 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 st.error(f"Error loading data: {str(e)}")
                 import traceback
                 st.code(traceback.format_exc())
-    st.stop()
 
 elif st.session_state.current_page == "Implied Probabilities":
     with main_placeholder.container():
