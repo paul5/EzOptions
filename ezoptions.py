@@ -7399,10 +7399,28 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     "Vomma Exposure": "Vomma"
                 }
                 
+                # Initialize saved exposure type if not present
+                if "saved_exposure_heatmap_type" not in st.session_state:
+                    if "exposure_heatmap_type" in st.session_state:
+                         st.session_state.saved_exposure_heatmap_type = st.session_state.exposure_heatmap_type
+                    else:
+                        st.session_state.saved_exposure_heatmap_type = list(exposure_types.keys())[0]
+
+                # Determine index based on saved type
+                try:
+                    default_index = list(exposure_types.keys()).index(st.session_state.saved_exposure_heatmap_type)
+                except ValueError:
+                    default_index = 0
+
+                def update_exposure_type():
+                    st.session_state.saved_exposure_heatmap_type = st.session_state.exposure_heatmap_type
+
                 selected_exposure_name = st.selectbox(
                     "Select Exposure Type:",
                     options=list(exposure_types.keys()),
-                    key="exposure_heatmap_type"
+                    index=default_index,
+                    key="exposure_heatmap_type",
+                    on_change=update_exposure_type
                 )
                 
                 exposure_type = exposure_types[selected_exposure_name]
