@@ -2620,7 +2620,13 @@ def fetch_and_process_multiple_dates(ticker, expiry_dates, process_func):
 def get_combined_intraday_data(ticker):
     """Get intraday data with fallback logic"""
     formatted_ticker = ticker.replace('%5E', '^')
-    stock = yf.Ticker(ticker)
+    
+    # Use ^GSPC for SPX chart data
+    chart_ticker = ticker
+    if formatted_ticker in ['^SPX', 'SPX', '%5ESPX']:
+        chart_ticker = '^GSPC'
+        
+    stock = yf.Ticker(chart_ticker)
     intraday_data = stock.history(period="1d", interval="1m")
     
     # Filter for market hours (9:30 AM to 4:00 PM ET)
@@ -3367,6 +3373,17 @@ def chart_settings():
             help="When enabled, all Greek exposures (Gamma, Vanna, Charm, Speed, Vomma) will be multiplied by Delta to show delta-adjusted values"
         )
 
+        # Greek Exposure Move Setting
+        if 'greek_exposure_move_type' not in st.session_state:
+            st.session_state.greek_exposure_move_type = "Per $1 Move"
+
+        st.radio(
+            "Greek Exposure Move:",
+            options=["Per $1 Move", "Per 1% Move"],
+            key="greek_exposure_move_type",
+            help="Choose whether Greek exposures (GEX, Speed) are calculated per $1 move or per 1% move in the underlying price."
+        )
+
         st.write("Colors:")
         st.color_picker("Calls", st.session_state.call_color, key='call_color')
         st.color_picker("Puts", st.session_state.put_color, key='put_color')
@@ -3711,9 +3728,15 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     # Determine which metric to use based on settings
     volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
 
+    # Determine move scaling factor
+    move_type = st.session_state.get('greek_exposure_move_type', 'Per $1 Move')
+    move_scale = 1.0
+    if move_type == 'Per 1% Move':
+        move_scale = 0.01 * S
+
     # GEX = Gamma * Volume/OI * Contract Size * Spot Price (Dollar Gamma per $1 move in underlying)
-    calls["GEX"] = calls["calc_gamma"] * calls[volume_metric] * 100 * S
-    puts["GEX"] = puts["calc_gamma"] * puts[volume_metric] * 100 * S
+    calls["GEX"] = calls["calc_gamma"] * calls[volume_metric] * 100 * S * move_scale
+    puts["GEX"] = puts["calc_gamma"] * puts[volume_metric] * 100 * S * move_scale
     
     # VEX = Vanna * Volume/OI * Contract Size * Spot Price * 0.01 (Dollar Vanna per 1 vol point change)
     calls["VEX"] = calls["calc_vanna"] * calls[volume_metric] * 100 * S * 0.01
@@ -3728,8 +3751,8 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     puts["Charm"] = puts["calc_charm"] * puts[volume_metric] * 100 * S / 365.0
     
     # Speed = Speed * Volume/OI * Contract Size * Spot Price (Dollar Speed per $1 move)
-    calls["Speed"] = calls["calc_speed"] * calls[volume_metric] * 100 * S
-    puts["Speed"] = puts["calc_speed"] * puts[volume_metric] * 100 * S
+    calls["Speed"] = calls["calc_speed"] * calls[volume_metric] * 100 * S * move_scale
+    puts["Speed"] = puts["calc_speed"] * puts[volume_metric] * 100 * S * move_scale
     
     # Vomma = Vomma * Volume/OI * Contract Size * 0.01 (Dollar Vomma per 1 vol point change)
     calls["Vomma"] = calls["calc_vomma"] * calls[volume_metric] * 100 * 0.01
@@ -5681,12 +5704,18 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     delta_adj = 1.0
                     if st.session_state.get('delta_adjusted_exposures', False) and 'calc_delta' in df.columns and exposure_col != 'DEX':
                          delta_adj = df['calc_delta'].abs()
+
+                    # Determine move scaling factor
+                    move_type = st.session_state.get('greek_exposure_move_type', 'Per $1 Move')
+                    move_scale = 1.0
+                    if move_type == 'Per 1% Move':
+                        move_scale = 0.01 * spot_price
                     
                     # Calculate notional exposure from raw greek values
                     # Notional = Greek Exposure (per $1 move) × Contract Premium (to weight by notional value)
                     if exposure_col == "GEX":
                         # Notional = Gamma × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj
+                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj * move_scale
                     elif exposure_col == "VEX":
                         # Notional = Vanna × Volume/OI × Contract Size × Spot Price × Contract Price
                         df[f'{exposure_col}_notional'] = df['calc_vanna'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj
@@ -5698,7 +5727,7 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                         df[f'{exposure_col}_notional'] = df['calc_charm'] * df[volume_metric] * 100 * spot_price * df[price_col] / 365.0 * delta_adj
                     elif exposure_col == "Speed":
                         # Notional = Speed × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_speed'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj
+                        df[f'{exposure_col}_notional'] = df['calc_speed'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj * move_scale
                     elif exposure_col == "Vomma":
                         # Notional = Vomma × Volume/OI × Contract Size × Spot Price × Contract Price
                         df[f'{exposure_col}_notional'] = df['calc_vomma'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj
