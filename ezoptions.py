@@ -3568,8 +3568,8 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     combined = pd.concat([calls, puts])
     combined = combined.dropna(subset=['extracted_expiry'])
     selected_expiry = datetime.strptime(expiry_date_str, "%Y-%m-%d").date()
-    calls = calls[calls['extracted_expiry'] == selected_expiry]
-    puts = puts[puts['extracted_expiry'] == selected_expiry]
+    calls = calls[calls['extracted_expiry'] == selected_expiry].copy()
+    puts = puts[puts['extracted_expiry'] == selected_expiry].copy()
 
     # Always use get_current_price to ensure consistent price source
     if S is None:
