@@ -334,10 +334,44 @@ def format_large_number(num):
     else:
         return f"{num:,.0f}"
 
+def get_now_et():
+    """Get current time in US/Eastern timezone"""
+    et_tz = pytz.timezone('US/Eastern')
+    return datetime.now(et_tz)
+
+def calculate_time_to_expiration(expiry_date):
+    """
+    Calculate time to expiration in years using Eastern Time.
+    expiry_date: datetime.date object or string 'YYYY-MM-DD'
+    Returns: time in years (float)
+    """
+    try:
+        et_tz = pytz.timezone('US/Eastern')
+        now_et = datetime.now(et_tz)
+        
+        if isinstance(expiry_date, str):
+            expiry_date = datetime.strptime(expiry_date, "%Y-%m-%d").date()
+        elif isinstance(expiry_date, datetime):
+            expiry_date = expiry_date.date()
+            
+        # Set expiration to 4:00 PM ET on the expiration date
+        expiry_dt = datetime.combine(expiry_date, datetime.min.time()) + timedelta(hours=16)
+        expiry_dt = et_tz.localize(expiry_dt)
+        
+        # Calculate time difference in years
+        diff = expiry_dt - now_et
+        t = diff.total_seconds() / (365 * 24 * 3600)
+        
+        return t
+             
+    except Exception as e:
+        print(f"Error calculating time to expiration: {e}")
+        return 0
+
 def check_market_status():
     """Check if we're in pre-market, market hours, or post-market"""
-    # Get current time in PST for market checks
-    pacific = datetime.now(tz=pytz.timezone('US/Pacific'))
+    # Get current time in ET for market checks
+    eastern = get_now_et()
     
     # Get local time and timezone
     local = datetime.now()
@@ -345,14 +379,15 @@ def check_market_status():
     
     market_message = None
     
-    if pacific.hour >= 21 or pacific.hour < 7:
-        next_update = pacific.replace(hour=7, minute=0) if pacific.hour < 7 else \
-                     (pacific + timedelta(days=1)).replace(hour=7, minute=00)
-        time_until = next_update - pacific
+    # Check for "Wait for new data" window (12 AM ET to 10 AM ET)
+    # This corresponds to 9 PM PT to 7 AM PT in the original code
+    if eastern.hour < 10:
+        next_update = eastern.replace(hour=10, minute=0)
+        time_until = next_update - eastern
         hours, remainder = divmod(time_until.seconds, 3600)
         minutes, _ = divmod(remainder, 60)
         
-        # Convert PST update time to local time
+        # Convert ET update time to local time
         local_next_update = next_update.astimezone(local_tz)
         
         market_message = f"""
@@ -1128,7 +1163,7 @@ def fetch_all_options(ticker):
     
     if stock.options:
         # Get current market date
-        current_market_date = datetime.now().date()
+        current_market_date = get_now_et().date()
         
         for exp in stock.options:
             try:
@@ -2308,26 +2343,12 @@ def calculate_probability_distribution(calls_df, puts_df, S, expiry_date):
         probabilities = []
         strikes_data = []
         
-        today = datetime.today().date()
+        today = get_now_et().date()
         if isinstance(expiry_date, str):
             expiry_date = datetime.strptime(expiry_date, "%Y-%m-%d").date()
         
         # Calculate time to expiration more precisely
-        try:
-            et_tz = pytz.timezone('US/Eastern')
-            now_et = datetime.now(et_tz)
-            
-            # Set expiration to 4:00 PM ET on the expiration date
-            expiry_dt = datetime.combine(expiry_date, datetime.min.time()) + timedelta(hours=16)
-            expiry_dt = et_tz.localize(expiry_dt)
-            
-            # Calculate time difference in years
-            diff = expiry_dt - now_et
-            t = diff.total_seconds() / (365 * 24 * 3600)
-        except:
-            t_days = (expiry_date - today).days
-            t = t_days / 365.0
-            
+        t = calculate_time_to_expiration(expiry_date)
         t = max(t, 1e-5)  # Ensure positive
         r = st.session_state.risk_free_rate
         
@@ -2551,7 +2572,7 @@ def validate_expiry(expiry_date):
     if expiry_date is None:
         return False
     try:
-        current_market_date = datetime.now().date()
+        current_market_date = get_now_et().date()
         # Allow expirations within -1 days
         days_difference = (expiry_date - current_market_date).days
         return days_difference >= -1
@@ -2705,7 +2726,7 @@ def create_iv_surface(calls_df, puts_df, current_price, selected_dates=None):
     )
     
     options_data['months'] = options_data['extracted_expiry'].apply(
-        lambda x: (x - datetime.now().date()).days / 30.44
+        lambda x: (x - get_now_et().date()).days / 30.44
     )
     
     # Remove extreme values
@@ -2940,7 +2961,7 @@ def save_ticker(ticker):
 # Market Maker Functions
 def get_latest_business_day():
     """Get the latest business day (Monday-Friday) from 24 hours ago."""
-    now = datetime.now()
+    now = get_now_et()
     twenty_four_hours_ago = now - timedelta(hours=24)
     
     # Start with the date from 24 hours ago
@@ -2964,9 +2985,9 @@ def should_run_script():
 def get_params_for_date(target_date, symbol=None, symbol_type="U"):
     """Get API parameters for a specific date and optional symbol."""
     # Safety check: ensure we never request future dates
-    today = datetime.now().date()
+    today = get_now_et().date()
     if target_date.date() > today:
-        target_date = datetime.now() - timedelta(days=1)  # Use yesterday instead
+        target_date = get_now_et() - timedelta(days=1)  # Use yesterday instead
         while target_date.weekday() > 4:  # Skip weekends
             target_date -= timedelta(days=1)
     
@@ -3225,7 +3246,7 @@ def download_volume_csv(symbol=None, symbol_type="U", expiry_date=None):
         else:
             # Try previous business days (up to 5 days back)
             for days_back in range(1, 6):  # Try up to 5 days back
-                fallback_date = datetime.now() - timedelta(days=days_back)
+                fallback_date = get_now_et() - timedelta(days=days_back)
                 
                 # Skip weekends
                 if fallback_date.weekday() > 4:
@@ -3580,7 +3601,7 @@ def validate_expiry(expiry_date):
     if expiry_date is None:
         return False
     try:
-        current_market_date = datetime.now().date()
+        current_market_date = get_now_et().date()
         # For future dates, ensure they're treated as valid
         return expiry_date >= current_market_date
     except Exception:
@@ -3611,33 +3632,15 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     S = float(S)  # Ensure price is float
     
     # Calculate time to expiration more precisely
-    today = datetime.today().date()
-    try:
-        et_tz = pytz.timezone('US/Eastern')
-        now_et = datetime.now(et_tz)
-        
-        # Set expiration to 4:00 PM ET on the expiration date
-        expiry_dt = datetime.combine(selected_expiry, datetime.min.time()) + timedelta(hours=16)
-        expiry_dt = et_tz.localize(expiry_dt)
-        
-        # Calculate time difference in years
-        diff = expiry_dt - now_et
-        t = diff.total_seconds() / (365 * 24 * 3600)
-        
-        # Check if expired
-        if t <= 0:
-             if selected_expiry < now_et.date():
-                 st.error("The selected expiration date is in the past!")
-                 return None, None, None, None, None, None
-             t = 1e-5 # Minimum time for 0DTE at close
-             
-    except Exception:
-        # Fallback to simple calculation
-        t_days = (selected_expiry - today).days
-        if not is_valid_trading_day(selected_expiry, today):
-            st.error("The selected expiration date is in the past!")
-            return None, None, None, None, None, None
-        t = t_days / 365.0
+    today = get_now_et().date()
+    t = calculate_time_to_expiration(selected_expiry)
+    
+    # Check if expired
+    if t <= 0:
+         if selected_expiry < today:
+             st.error("The selected expiration date is in the past!")
+             return None, None, None, None, None, None
+         t = 1e-5 # Minimum time for 0DTE at close
 
     t = max(t, 1e-5) # Ensure positive and non-zero
 
@@ -4273,7 +4276,7 @@ def get_nearest_expiry(available_dates):
     if not available_dates:
         return None
     
-    today = datetime.now().date()
+    today = get_now_et().date()
     future_dates = [datetime.strptime(date, '%Y-%m-%d').date() for date in available_dates if datetime.strptime(date, '%Y-%m-%d').date() >= today]
     
     if not future_dates:
@@ -4294,23 +4297,14 @@ def create_davi_chart(calls, puts, S):
     # Check if calc_delta column exists, if not, calculate delta
     if 'calc_delta' not in calls_df.columns:
         # Get current date and calculate time to expiration
-        today = datetime.today().date()
+        today = get_now_et().date()
         
         # Extract expiry date - use the first one if multiple
         if 'extracted_expiry' in calls_df.columns and not calls_df['extracted_expiry'].empty:
             selected_expiry = calls_df['extracted_expiry'].iloc[0]
             
             # Calculate time to expiration more precisely
-            try:
-                et_tz = pytz.timezone('US/Eastern')
-                now_et = datetime.now(et_tz)
-                expiry_dt = datetime.combine(selected_expiry, datetime.min.time()) + timedelta(hours=16)
-                expiry_dt = et_tz.localize(expiry_dt)
-                t = (expiry_dt - now_et).total_seconds() / (365 * 24 * 3600)
-            except:
-                t_days = max((selected_expiry - today).days, 1)  # Ensure at least 1 day
-                t = t_days / 365.0
-            
+            t = calculate_time_to_expiration(selected_expiry)
             t = max(t, 1e-5)
             
             # Define function to compute delta
@@ -5830,30 +5824,14 @@ elif st.session_state.current_page == "Calculated Greeks":
                     st.markdown(f"**Underlying Price (S):** {S}")
                     
                     # Calculate time to expiration more precisely
-                    try:
-                        et_tz = pytz.timezone('US/Eastern')
-                        now_et = datetime.now(et_tz)
-                        
-                        # Set expiration to 4:00 PM ET on the expiration date
-                        expiry_dt = datetime.combine(selected_expiry, datetime.min.time()) + timedelta(hours=16)
-                        expiry_dt = et_tz.localize(expiry_dt)
-                        
-                        # Calculate time difference in years
-                        diff = expiry_dt - now_et
-                        t = diff.total_seconds() / (365 * 24 * 3600)
-                        
-                        if t <= 0:
-                             if selected_expiry < now_et.date():
-                                 st.error("The selected expiration date is in the past!")
-                                 st.stop()
-                             t = 1e-5
-                    except Exception:
-                        today = datetime.today().date()
-                        t_days = (selected_expiry - today).days
-                        if t_days < 0:
-                            st.error("The selected expiration date is in the past!")
-                            st.stop()
-                        t = t_days / 365.0
+                    t = calculate_time_to_expiration(selected_expiry)
+                    
+                    if t <= 0:
+                         today = get_now_et().date()
+                         if selected_expiry < today:
+                             st.error("The selected expiration date is in the past!")
+                             st.stop()
+                         t = 1e-5
                     
                     t = max(t, 1e-5)
                     st.markdown(f"**Time to Expiration (t in years):** {t:.4f}")
@@ -6571,7 +6549,7 @@ elif st.session_state.current_page == "IV Surface":
 
                     for exp_date in selected_expiry_dates:
                         expiry_date = datetime.strptime(exp_date, '%Y-%m-%d').date()
-                        days_to_exp = (expiry_date - datetime.now().date()).days
+                        days_to_exp = (expiry_date - get_now_et().date()).days
                         calls, puts = fetch_options_for_date(ticker, exp_date, S)
 
                         # Filter strikes within range
@@ -7313,23 +7291,10 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
 
                 # Calculate days to expiry for each option
                 try:
-                    et_tz = pytz.timezone('US/Eastern')
-                    now_et = datetime.now(et_tz)
-                    
-                    # Function to calculate t for a date
-                    def calculate_t(expiry_date):
-                        try:
-                            expiry_dt = datetime.combine(expiry_date, datetime.min.time()) + timedelta(hours=16)
-                            expiry_dt = et_tz.localize(expiry_dt)
-                            t_val = (expiry_dt - now_et).total_seconds() / (365 * 24 * 3600)
-                            return max(t_val, 1e-5)
-                        except:
-                            return 1/365.0
-                    
-                    all_calls['t'] = all_calls['extracted_expiry'].apply(calculate_t)
-                    all_puts['t'] = all_puts['extracted_expiry'].apply(calculate_t)
+                    all_calls['t'] = all_calls['extracted_expiry'].apply(calculate_time_to_expiration)
+                    all_puts['t'] = all_puts['extracted_expiry'].apply(calculate_time_to_expiration)
                 except:
-                    today = datetime.today().date()
+                    today = get_now_et().date()
                     all_calls['t'] = (all_calls['extracted_expiry'] - today).dt.days / 365.0
                     all_puts['t'] = (all_puts['extracted_expiry'] - today).dt.days / 365.0
                     
@@ -7339,9 +7304,8 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
                     all_puts = all_puts.copy()
                     
                     # Calculate days to expiry for each option
-                    today = datetime.today().date()
-                    all_calls['t'] = (all_calls['extracted_expiry'] - today).dt.days / 365.0
-                    all_puts['t'] = (all_puts['extracted_expiry'] - today).dt.days / 365.0
+                    all_calls['t'] = all_calls['extracted_expiry'].apply(calculate_time_to_expiration)
+                    all_puts['t'] = all_puts['extracted_expiry'].apply(calculate_time_to_expiration)
                     
                     # Define delta calculation function
                     def compute_delta(row, flag):
@@ -7524,6 +7488,11 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 # Create heatmaps
                 call_color = st.session_state.call_color
                 put_color = st.session_state.put_color
+
+                # Create text arrays for heatmaps
+                call_text = [[format_large_number(val) for val in row] for row in call_exposure]
+                put_text = [[format_large_number(val) for val in row] for row in put_exposure]
+                net_text = [[format_large_number(val) for val in row] for row in net_exposure]
                 
                 # Call Exposure Heatmap
                 if st.session_state.show_calls:
@@ -7531,8 +7500,8 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         z=call_exposure_norm,
                         x=date_labels,
                         y=filtered_strikes,
-                        text=call_exposure,
-                        texttemplate='%{text:.2s}',
+                        text=call_text,
+                        texttemplate='%{text}',
                         textfont=dict(size=st.session_state.chart_text_size),
                         colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, f'rgba({int(call_color[1:3], 16)},{int(call_color[3:5], 16)},{int(call_color[5:7], 16)},0.1)'], [1, call_color]],
                         hoverongaps=False,
@@ -7590,8 +7559,8 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         z=put_exposure_norm,
                         x=date_labels,
                         y=filtered_strikes,
-                        text=put_exposure,
-                        texttemplate='%{text:.2s}',
+                        text=put_text,
+                        texttemplate='%{text}',
                         textfont=dict(size=st.session_state.chart_text_size),
                         colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, f'rgba({int(put_color[1:3], 16)},{int(put_color[3:5], 16)},{int(put_color[5:7], 16)},0.1)'], [1, put_color]],
                         hoverongaps=False,
@@ -7649,8 +7618,8 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         z=net_exposure_norm,
                         x=date_labels,
                         y=filtered_strikes,
-                        text=net_exposure,
-                        texttemplate='%{text:.2s}',
+                        text=net_text,
+                        texttemplate='%{text}',
                         textfont=dict(size=st.session_state.chart_text_size),
                         colorscale=[[0, put_color], [0.5, 'black'], [1, call_color]],
                         hoverongaps=False,
@@ -7708,15 +7677,15 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 
                 with col1:
                     total_call = np.sum(call_exposure)
-                    st.metric("Total Call Exposure", f"${total_call:,.0f}")
+                    st.metric("Total Call Exposure", f"${format_large_number(total_call)}")
                 
                 with col2:
                     total_put = np.sum(put_exposure)
-                    st.metric("Total Put Exposure", f"${total_put:,.0f}")
+                    st.metric("Total Put Exposure", f"${format_large_number(total_put)}")
                 
                 with col3:
                     total_net = np.sum(net_exposure)
-                    st.metric("Total Net Exposure", f"${total_net:,.0f}")
+                    st.metric("Total Net Exposure", f"${format_large_number(total_net)}")
             
             except Exception as e:
                 st.error(f"Error loading data: {str(e)}")
