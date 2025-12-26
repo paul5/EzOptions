@@ -2295,8 +2295,23 @@ def calculate_probability_distribution(calls_df, puts_df, S, expiry_date):
         if isinstance(expiry_date, str):
             expiry_date = datetime.strptime(expiry_date, "%Y-%m-%d").date()
         
-        t_days = (expiry_date - today).days
-        t = max(t_days / 365.0, 1/365)  # At least 1 day
+        # Calculate time to expiration more precisely
+        try:
+            et_tz = pytz.timezone('US/Eastern')
+            now_et = datetime.now(et_tz)
+            
+            # Set expiration to 4:00 PM ET on the expiration date
+            expiry_dt = datetime.combine(expiry_date, datetime.min.time()) + timedelta(hours=16)
+            expiry_dt = et_tz.localize(expiry_dt)
+            
+            # Calculate time difference in years
+            diff = expiry_dt - now_et
+            t = diff.total_seconds() / (365 * 24 * 3600)
+        except:
+            t_days = (expiry_date - today).days
+            t = t_days / 365.0
+            
+        t = max(t, 1e-5)  # Ensure positive
         r = st.session_state.risk_free_rate
         
         for strike in all_strikes:
@@ -3442,7 +3457,7 @@ def chart_settings():
                 st.number_input("RSI Period", min_value=5, max_value=30, value=st.session_state.rsi_period, key="rsi_period")
             
         if 'chart_text_size' not in st.session_state:
-            st.session_state.chart_text_size = 15  # Default text size
+            st.session_state.chart_text_size = 12  # Default text size
             
         st.number_input(
             "Chart Text Size",
@@ -3577,13 +3592,37 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
         return None, None, None, None, None, None
 
     S = float(S)  # Ensure price is float
+    
+    # Calculate time to expiration more precisely
     today = datetime.today().date()
-    t_days = (selected_expiry - today).days
-    if not is_valid_trading_day(selected_expiry, today):
-        st.error("The selected expiration date is in the past!")
-        return None, None, None, None, None, None
+    try:
+        et_tz = pytz.timezone('US/Eastern')
+        now_et = datetime.now(et_tz)
+        
+        # Set expiration to 4:00 PM ET on the expiration date
+        expiry_dt = datetime.combine(selected_expiry, datetime.min.time()) + timedelta(hours=16)
+        expiry_dt = et_tz.localize(expiry_dt)
+        
+        # Calculate time difference in years
+        diff = expiry_dt - now_et
+        t = diff.total_seconds() / (365 * 24 * 3600)
+        
+        # Check if expired
+        if t <= 0:
+             if selected_expiry < now_et.date():
+                 st.error("The selected expiration date is in the past!")
+                 return None, None, None, None, None, None
+             t = 1e-5 # Minimum time for 0DTE at close
+             
+    except Exception:
+        # Fallback to simple calculation
+        t_days = (selected_expiry - today).days
+        if not is_valid_trading_day(selected_expiry, today):
+            st.error("The selected expiration date is in the past!")
+            return None, None, None, None, None, None
+        t = t_days / 365.0
 
-    t = t_days / 365.0
+    t = max(t, 1e-5) # Ensure positive and non-zero
 
     # Compute Greeks for Gamma, Vanna, Delta, Charm, Speed, and Vomma
     def compute_greeks(row, flag, greek_type):
@@ -4242,8 +4281,19 @@ def create_davi_chart(calls, puts, S):
         # Extract expiry date - use the first one if multiple
         if 'extracted_expiry' in calls_df.columns and not calls_df['extracted_expiry'].empty:
             selected_expiry = calls_df['extracted_expiry'].iloc[0]
-            t_days = max((selected_expiry - today).days, 1)  # Ensure at least 1 day
-            t = t_days / 365.0
+            
+            # Calculate time to expiration more precisely
+            try:
+                et_tz = pytz.timezone('US/Eastern')
+                now_et = datetime.now(et_tz)
+                expiry_dt = datetime.combine(selected_expiry, datetime.min.time()) + timedelta(hours=16)
+                expiry_dt = et_tz.localize(expiry_dt)
+                t = (expiry_dt - now_et).total_seconds() / (365 * 24 * 3600)
+            except:
+                t_days = max((selected_expiry - today).days, 1)  # Ensure at least 1 day
+                t = t_days / 365.0
+            
+            t = max(t, 1e-5)
             
             # Define function to compute delta
             def compute_delta(row, flag):
@@ -5756,14 +5806,33 @@ elif st.session_state.current_page == "Calculated Greeks":
                     S = round(S, 2)
                     st.markdown(f"**Underlying Price (S):** {S}")
                     
-                    today = datetime.today().date()
-                    t_days = (selected_expiry - today).days
-                    # Change this condition to allow same-day expiration
-                    if t_days < 0:  # Changed from t_days <= 0
-                        st.error("The selected expiration date is in the past!")
-                        st.stop()
-
-                    t = t_days / 365.0
+                    # Calculate time to expiration more precisely
+                    try:
+                        et_tz = pytz.timezone('US/Eastern')
+                        now_et = datetime.now(et_tz)
+                        
+                        # Set expiration to 4:00 PM ET on the expiration date
+                        expiry_dt = datetime.combine(selected_expiry, datetime.min.time()) + timedelta(hours=16)
+                        expiry_dt = et_tz.localize(expiry_dt)
+                        
+                        # Calculate time difference in years
+                        diff = expiry_dt - now_et
+                        t = diff.total_seconds() / (365 * 24 * 3600)
+                        
+                        if t <= 0:
+                             if selected_expiry < now_et.date():
+                                 st.error("The selected expiration date is in the past!")
+                                 st.stop()
+                             t = 1e-5
+                    except Exception:
+                        today = datetime.today().date()
+                        t_days = (selected_expiry - today).days
+                        if t_days < 0:
+                            st.error("The selected expiration date is in the past!")
+                            st.stop()
+                        t = t_days / 365.0
+                    
+                    t = max(t, 1e-5)
                     st.markdown(f"**Time to Expiration (t in years):** {t:.4f}")
                     
                     def compute_row_greeks(row, flag):
@@ -7215,6 +7284,28 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
                 if all_calls.empty and all_puts.empty:
                     st.warning("No options data available for the selected dates.")
                     st.stop()
+
+                # Calculate days to expiry for each option
+                try:
+                    et_tz = pytz.timezone('US/Eastern')
+                    now_et = datetime.now(et_tz)
+                    
+                    # Function to calculate t for a date
+                    def calculate_t(expiry_date):
+                        try:
+                            expiry_dt = datetime.combine(expiry_date, datetime.min.time()) + timedelta(hours=16)
+                            expiry_dt = et_tz.localize(expiry_dt)
+                            t_val = (expiry_dt - now_et).total_seconds() / (365 * 24 * 3600)
+                            return max(t_val, 1e-5)
+                        except:
+                            return 1/365.0
+                    
+                    all_calls['t'] = all_calls['extracted_expiry'].apply(calculate_t)
+                    all_puts['t'] = all_puts['extracted_expiry'].apply(calculate_t)
+                except:
+                    today = datetime.today().date()
+                    all_calls['t'] = (all_calls['extracted_expiry'] - today).dt.days / 365.0
+                    all_puts['t'] = (all_puts['extracted_expiry'] - today).dt.days / 365.0
                     
                 # Calculate delta values if they don't exist
                 if 'calc_delta' not in all_calls.columns:
@@ -7339,6 +7430,9 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 max_strike = S + strike_range
                 filtered_strikes = [s for s in all_strikes if min_strike <= s <= max_strike]
                 
+                # Calculate current price index for the heatmap line
+                s_index = np.interp(S, filtered_strikes, np.arange(len(filtered_strikes)))
+                
                 # Create heatmap data matrices
                 call_exposure = np.zeros((len(filtered_strikes), len(dates_with_data)))
                 put_exposure = np.zeros((len(filtered_strikes), len(dates_with_data)))
@@ -7374,6 +7468,10 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 metric_name = "Volume" if st.session_state.get('use_volume_for_greeks', False) else "Open Interest"
                 delta_adjusted_label = " (Δ-Adjusted)" if st.session_state.get('delta_adjusted_exposures', False) and exposure_type != 'DEX' else ""
                 
+                # Calculate dynamic height based on number of strikes and text size
+                base_height_per_row = st.session_state.chart_text_size * 2.5  # Adjust multiplier as needed
+                heatmap_height = max(600, len(filtered_strikes) * base_height_per_row)
+                
                 # Create heatmaps
                 call_color = st.session_state.call_color
                 put_color = st.session_state.put_color
@@ -7386,6 +7484,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         y=filtered_strikes,
                         text=call_exposure,
                         texttemplate='%{text:.2s}',
+                        textfont=dict(size=st.session_state.chart_text_size),
                         colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, f'rgba({int(call_color[1:3], 16)},{int(call_color[3:5], 16)},{int(call_color[5:7], 16)},0.1)'], [1, call_color]],
                         hoverongaps=False,
                         name="Call Exposure",
@@ -7394,12 +7493,13 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     ))
                     
                     fig_calls.add_hline(
-                        y=S,
+                        y=s_index,
                         line_dash="dash",
                         line_color="white",
                         opacity=0.7,
                         annotation_text=f"${S:.2f}",
-                        annotation_position="right"
+                        annotation_position="right",
+                        annotation_font=dict(size=st.session_state.chart_text_size)
                     )
                     
                     fig_calls.update_layout(
@@ -7418,14 +7518,15 @@ elif st.session_state.current_page == "Exposure Heatmap":
                             font=dict(size=st.session_state.chart_text_size)
                         ),
                         template="plotly_dark",
-                        height=600,
+                        height=heatmap_height,
                         xaxis=dict(
                             tickfont=dict(size=st.session_state.chart_text_size - 2),
                             tickangle=-45,
                             type='category'
                         ),
                         yaxis=dict(
-                            tickfont=dict(size=st.session_state.chart_text_size)
+                            tickfont=dict(size=st.session_state.chart_text_size),
+                            type='category'
                         ),
                         margin=dict(r=100)
                     )
@@ -7440,6 +7541,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         y=filtered_strikes,
                         text=put_exposure,
                         texttemplate='%{text:.2s}',
+                        textfont=dict(size=st.session_state.chart_text_size),
                         colorscale=[[0, 'rgba(0,0,0,0)'], [0.01, f'rgba({int(put_color[1:3], 16)},{int(put_color[3:5], 16)},{int(put_color[5:7], 16)},0.1)'], [1, put_color]],
                         hoverongaps=False,
                         name="Put Exposure",
@@ -7448,12 +7550,13 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     ))
                     
                     fig_puts.add_hline(
-                        y=S,
+                        y=s_index,
                         line_dash="dash",
                         line_color="white",
                         opacity=0.7,
                         annotation_text=f"${S:.2f}",
-                        annotation_position="right"
+                        annotation_position="right",
+                        annotation_font=dict(size=st.session_state.chart_text_size)
                     )
                     
                     fig_puts.update_layout(
@@ -7472,14 +7575,15 @@ elif st.session_state.current_page == "Exposure Heatmap":
                             font=dict(size=st.session_state.chart_text_size)
                         ),
                         template="plotly_dark",
-                        height=600,
+                        height=heatmap_height,
                         xaxis=dict(
                             tickfont=dict(size=st.session_state.chart_text_size - 2),
                             tickangle=-45,
                             type='category'
                         ),
                         yaxis=dict(
-                            tickfont=dict(size=st.session_state.chart_text_size)
+                            tickfont=dict(size=st.session_state.chart_text_size),
+                            type='category'
                         ),
                         margin=dict(r=100)
                     )
@@ -7522,6 +7626,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         y=filtered_strikes,
                         text=net_exposure,
                         texttemplate='%{text:.2s}',
+                        textfont=dict(size=st.session_state.chart_text_size),
                         colorscale=colorscale,
                         hoverongaps=False,
                         name="Net Exposure",
@@ -7532,12 +7637,13 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     ))
                     
                     fig_net.add_hline(
-                        y=S,
+                        y=s_index,
                         line_dash="dash",
                         line_color="white",
                         opacity=0.7,
                         annotation_text=f"${S:.2f}",
-                        annotation_position="right"
+                        annotation_position="right",
+                        annotation_font=dict(size=st.session_state.chart_text_size)
                     )
                     
                     fig_net.update_layout(
@@ -7556,14 +7662,15 @@ elif st.session_state.current_page == "Exposure Heatmap":
                             font=dict(size=st.session_state.chart_text_size)
                         ),
                         template="plotly_dark",
-                        height=600,
+                        height=heatmap_height,
                         xaxis=dict(
                             tickfont=dict(size=st.session_state.chart_text_size - 2),
                             tickangle=-45,
                             type='category'
                         ),
                         yaxis=dict(
-                            tickfont=dict(size=st.session_state.chart_text_size)
+                            tickfont=dict(size=st.session_state.chart_text_size),
+                            type='category'
                         ),
                         margin=dict(r=100)
                     )
