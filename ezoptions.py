@@ -3717,21 +3717,22 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
 
     # Apply delta adjustment if enabled
     if st.session_state.get('delta_adjusted_exposures', False):
-        # Multiply all exposures (except DEX which is already delta-based) by delta
-        calls["GEX"] = calls["GEX"] * calls["calc_delta"]
-        puts["GEX"] = puts["GEX"] * puts["calc_delta"]
+        # Multiply all exposures (except DEX which is already delta-based) by delta (probability)
+        # Use absolute delta to weight by probability without flipping signs for puts
+        calls["GEX"] = calls["GEX"] * calls["calc_delta"].abs()
+        puts["GEX"] = puts["GEX"] * puts["calc_delta"].abs()
         
-        calls["VEX"] = calls["VEX"] * calls["calc_delta"]
-        puts["VEX"] = puts["VEX"] * puts["calc_delta"]
+        calls["VEX"] = calls["VEX"] * calls["calc_delta"].abs()
+        puts["VEX"] = puts["VEX"] * puts["calc_delta"].abs()
         
-        calls["Charm"] = calls["Charm"] * calls["calc_delta"]
-        puts["Charm"] = puts["Charm"] * puts["calc_delta"]
+        calls["Charm"] = calls["Charm"] * calls["calc_delta"].abs()
+        puts["Charm"] = puts["Charm"] * puts["calc_delta"].abs()
         
-        calls["Speed"] = calls["Speed"] * calls["calc_delta"]
-        puts["Speed"] = puts["Speed"] * puts["calc_delta"]
+        calls["Speed"] = calls["Speed"] * calls["calc_delta"].abs()
+        puts["Speed"] = puts["Speed"] * puts["calc_delta"].abs()
         
-        calls["Vomma"] = calls["Vomma"] * calls["calc_delta"]
-        puts["Vomma"] = puts["Vomma"] * puts["calc_delta"]
+        calls["Vomma"] = calls["Vomma"] * calls["calc_delta"].abs()
+        puts["Vomma"] = puts["Vomma"] * puts["calc_delta"].abs()
 
     return calls, puts, S, t, selected_expiry, today
 
@@ -4316,11 +4317,11 @@ def create_davi_chart(calls, puts, S):
     
     # Calculate DAVI for calls and puts with filtering
     # Only keep non-zero values
-    calls_df['DAVI'] = (calls_df['volume'] + calls_df['openInterest']) * calls_df['lastPrice'] * calls_df['calc_delta']
+    calls_df['DAVI'] = (calls_df['volume'] + calls_df['openInterest']) * 100 * calls_df['lastPrice'] * calls_df['calc_delta']
     calls_df = calls_df[calls_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     calls_df['OptionType'] = 'Call'
 
-    puts_df['DAVI'] = (puts_df['volume'] + puts_df['openInterest']) * puts_df['lastPrice'] * puts_df['calc_delta']
+    puts_df['DAVI'] = (puts_df['volume'] + puts_df['openInterest']) * 100 * puts_df['lastPrice'] * puts_df['calc_delta']
     puts_df = puts_df[puts_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     puts_df['OptionType'] = 'Put'
 
@@ -5664,27 +5665,32 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     
                     # Determine which volume metric to use
                     volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
+
+                    # Get delta adjustment factor
+                    delta_adj = 1.0
+                    if st.session_state.get('delta_adjusted_exposures', False) and 'calc_delta' in df.columns and exposure_col != 'DEX':
+                         delta_adj = df['calc_delta'].abs()
                     
                     # Calculate notional exposure from raw greek values
                     # Notional = Greek Exposure (per $1 move) × Contract Premium (to weight by notional value)
                     if exposure_col == "GEX":
                         # Notional = Gamma × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * df[volume_metric] * 100 * spot_price * df[price_col]
+                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj
                     elif exposure_col == "VEX":
                         # Notional = Vanna × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_vanna'] * df[volume_metric] * 100 * spot_price * df[price_col]
+                        df[f'{exposure_col}_notional'] = df['calc_vanna'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj
                     elif exposure_col == "DEX":
                         # Notional = Delta × Volume/OI × Contract Size × Spot Price × Contract Price
                         df[f'{exposure_col}_notional'] = df['calc_delta'] * df[volume_metric] * 100 * spot_price * df[price_col]
                     elif exposure_col == "Charm":
                         # Notional = Charm × Volume/OI × Contract Size × Spot Price × Contract Price / 365
-                        df[f'{exposure_col}_notional'] = df['calc_charm'] * df[volume_metric] * 100 * spot_price * df[price_col] / 365.0
+                        df[f'{exposure_col}_notional'] = df['calc_charm'] * df[volume_metric] * 100 * spot_price * df[price_col] / 365.0 * delta_adj
                     elif exposure_col == "Speed":
                         # Notional = Speed × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_speed'] * df[volume_metric] * 100 * spot_price * df[price_col]
+                        df[f'{exposure_col}_notional'] = df['calc_speed'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj
                     elif exposure_col == "Vomma":
                         # Notional = Vomma × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_vomma'] * df[volume_metric] * 100 * spot_price * df[price_col]
+                        df[f'{exposure_col}_notional'] = df['calc_vomma'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj
                     
                     return df
                 
