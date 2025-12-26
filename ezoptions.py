@@ -7518,7 +7518,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         hoverongaps=False,
                         name="Call Exposure",
                         showscale=False,
-                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Exposure: %{text:,.0f}<extra></extra>',
+                        hovertemplate='%{x}<br>$%{y}<extra></extra>',
                         zmin=0,
                         zmax=1
                     ))
@@ -7577,7 +7577,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         hoverongaps=False,
                         name="Put Exposure",
                         showscale=False,
-                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Exposure: %{text:,.0f}<extra></extra>',
+                        hovertemplate='%{x}<br>$%{y}<extra></extra>',
                         zmin=0,
                         zmax=1
                     ))
@@ -7636,7 +7636,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         hoverongaps=False,
                         name="Net Exposure",
                         showscale=False,
-                        hovertemplate='Date: %{x}<br>Strike: $%{y}<br>Net Exposure: %{text:,.0f}<extra></extra>',
+                        hovertemplate='%{x}<br>$%{y}<extra></extra>',
                         zmin=-1,
                         zmax=1
                     ))
