@@ -2785,7 +2785,7 @@ def create_iv_surface(calls_df, puts_df, current_price, selected_dates=None):
         return None, None, None
 
 #Streamlit UI
-st.title("Ez Options Stock Data")
+st.title("Ez Options")
 
 # Modify the reset_session_state function to preserve color settings
 def reset_session_state():
@@ -3586,6 +3586,22 @@ def chart_settings():
 
 # Call the regular function instead of the fragment
 chart_settings()
+
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    """
+    <div style="text-align: center;">
+        <a href="https://github.com/EazyDuz1t/EzOptions" target="_blank">
+            <img src="https://img.shields.io/badge/GitHub-Repo-blue?logo=github" alt="GitHub Repo" style="margin-bottom: 10px;">
+        </a>
+        <br>
+        <a href="https://discord.com/users/eazy101" target="_blank">
+            <img src="https://img.shields.io/badge/Discord-eazy101-7289DA?logo=discord&logoColor=white" alt="Discord User">
+        </a>
+    </div>
+    """,
+    unsafe_allow_html=True
+)
 
 # Use the saved ticker and expiry date if available
 saved_ticker = st.session_state.get("saved_ticker", "")
