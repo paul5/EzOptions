@@ -7496,13 +7496,21 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     if row['strike'] in strike_to_idx and row['extracted_expiry'] in date_to_idx:
                         strike_idx = strike_to_idx[row['strike']]
                         date_idx = date_to_idx[row['extracted_expiry']]
-                        call_exposure[strike_idx, date_idx] += row[exposure_type]
+                        val = row[exposure_type]
+                        if pd.notna(val):
+                            call_exposure[strike_idx, date_idx] += val
                 
                 for _, row in combined_puts.iterrows():
                     if row['strike'] in strike_to_idx and row['extracted_expiry'] in date_to_idx:
                         strike_idx = strike_to_idx[row['strike']]
                         date_idx = date_to_idx[row['extracted_expiry']]
-                        put_exposure[strike_idx, date_idx] += row[exposure_type]
+                        val = row[exposure_type]
+                        if pd.notna(val):
+                            put_exposure[strike_idx, date_idx] += val
+                
+                # Ensure no NaNs in exposure matrices
+                call_exposure = np.nan_to_num(call_exposure)
+                put_exposure = np.nan_to_num(put_exposure)
                 
                 # Calculate net exposure
                 if exposure_type in ['GEX', 'GEX_notional']:
@@ -7525,6 +7533,9 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 else:
                     net_exposure = call_exposure - put_exposure
                 
+                # Ensure no NaNs in net exposure
+                net_exposure = np.nan_to_num(net_exposure)
+                
                 # Normalize matrices per column (expiration) for coloring
                 call_exposure_norm = np.zeros_like(call_exposure)
                 put_exposure_norm = np.zeros_like(put_exposure)
@@ -7532,21 +7543,26 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 
                 # Normalize Call Exposure
                 for col in range(call_exposure.shape[1]):
-                    max_val = np.max(call_exposure[:, col])
+                    max_val = np.nanmax(call_exposure[:, col])
                     if max_val > 0:
                         call_exposure_norm[:, col] = call_exposure[:, col] / max_val
                         
                 # Normalize Put Exposure
                 for col in range(put_exposure.shape[1]):
-                    max_val = np.max(put_exposure[:, col])
+                    max_val = np.nanmax(put_exposure[:, col])
                     if max_val > 0:
                         put_exposure_norm[:, col] = put_exposure[:, col] / max_val
 
                 # Normalize Net Exposure
                 for col in range(net_exposure.shape[1]):
-                    max_abs = np.max(np.abs(net_exposure[:, col]))
+                    max_abs = np.nanmax(np.abs(net_exposure[:, col]))
                     if max_abs > 0:
                         net_exposure_norm[:, col] = net_exposure[:, col] / max_abs
+                
+                # Final cleanup of normalized matrices
+                call_exposure_norm = np.nan_to_num(call_exposure_norm)
+                put_exposure_norm = np.nan_to_num(put_exposure_norm)
+                net_exposure_norm = np.nan_to_num(net_exposure_norm)
                 
                 # Format dates for display
                 date_labels = [d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d) for d in dates_with_data]
