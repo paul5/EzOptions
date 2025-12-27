@@ -2167,10 +2167,8 @@ def calculate_charm(flag, S, K, t, sigma):
         
         norm_d1 = norm.pdf(d1)
         
-        if flag == 'c':
-            charm = -norm_d1 * (2*r*t - d2*sigma*sqrt(t)) / (2*t*sigma*sqrt(t))
-        else:  # put
-            charm = -norm_d1 * (2*r*t - d2*sigma*sqrt(t)) / (2*t*sigma*sqrt(t)) - r*norm.cdf(-d2)
+        # Charm is the same for calls and puts when q=0 (no dividends)
+        charm = -norm_d1 * (2*r*t - d2*sigma*sqrt(t)) / (2*t*sigma*sqrt(t))
         
         return charm
     except Exception as e:
@@ -3722,13 +3720,9 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     # Determine which metric to use based on settings
     volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
 
-    # Determine move scaling factor
-    # Always use Per 1% Move
-    move_scale = 0.01 * S
-
-    # GEX = Gamma * Volume/OI * Contract Size * Spot Price (Dollar Gamma per $1 move in underlying)
-    calls["GEX"] = calls["calc_gamma"] * calls[volume_metric] * 100 * S * move_scale
-    puts["GEX"] = puts["calc_gamma"] * puts[volume_metric] * 100 * S * move_scale
+    # GEX = Gamma * Volume/OI * Contract Size * Spot Price^2 * 0.01 (Dollar Gamma per 1% move in underlying)
+    calls["GEX"] = calls["calc_gamma"] * calls[volume_metric] * 100 * S * S * 0.01
+    puts["GEX"] = puts["calc_gamma"] * puts[volume_metric] * 100 * S * S * 0.01
     
     # VEX = Vanna * Volume/OI * Contract Size * Spot Price * 0.01 (Dollar Vanna per 1 vol point change)
     calls["VEX"] = calls["calc_vanna"] * calls[volume_metric] * 100 * S * 0.01
@@ -3742,9 +3736,9 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     calls["Charm"] = calls["calc_charm"] * calls[volume_metric] * 100 * S / 365.0
     puts["Charm"] = puts["calc_charm"] * puts[volume_metric] * 100 * S / 365.0
     
-    # Speed = Speed * Volume/OI * Contract Size * Spot Price (Dollar Speed per $1 move)
-    calls["Speed"] = calls["calc_speed"] * calls[volume_metric] * 100 * S * move_scale
-    puts["Speed"] = puts["calc_speed"] * puts[volume_metric] * 100 * S * move_scale
+    # Speed = Speed * Volume/OI * Contract Size * Spot Price^2 * 0.01 (Dollar Speed per 1% move)
+    calls["Speed"] = calls["calc_speed"] * calls[volume_metric] * 100 * S * S * 0.01
+    puts["Speed"] = puts["calc_speed"] * puts[volume_metric] * 100 * S * S * 0.01
     
     # Vomma = Vomma * Volume/OI * Contract Size * 0.01 (Dollar Vomma per 1 vol point change)
     calls["Vomma"] = calls["calc_vomma"] * calls[volume_metric] * 100 * 0.01
