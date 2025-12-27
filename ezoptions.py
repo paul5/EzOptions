@@ -4345,13 +4345,17 @@ def create_davi_chart(calls, puts, S):
             calls_df["calc_delta"] = calls_df.apply(lambda row: max(0, min(1, 1 - (row["strike"] - S) / (S * 0.1))), axis=1)
             puts_df["calc_delta"] = puts_df.apply(lambda row: max(0, min(1, (row["strike"] - S) / (S * 0.1))), axis=1)
     
+    # Determine which metric to use
+    use_volume = st.session_state.get('use_volume_for_greeks', False)
+    metric_col = 'volume' if use_volume else 'openInterest'
+
     # Calculate DAVI for calls and puts with filtering
     # Only keep non-zero values
-    calls_df['DAVI'] = (calls_df['volume'].fillna(0) + calls_df['openInterest'].fillna(0)) * 100 * calls_df['lastPrice'].fillna(0) * calls_df['calc_delta'].fillna(0)
+    calls_df['DAVI'] = calls_df[metric_col].fillna(0) * 100 * calls_df['lastPrice'].fillna(0) * calls_df['calc_delta'].fillna(0)
     calls_df = calls_df[calls_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     calls_df['OptionType'] = 'Call'
 
-    puts_df['DAVI'] = (puts_df['volume'].fillna(0) + puts_df['openInterest'].fillna(0)) * 100 * puts_df['lastPrice'].fillna(0) * puts_df['calc_delta'].fillna(0)
+    puts_df['DAVI'] = puts_df[metric_col].fillna(0) * 100 * puts_df['lastPrice'].fillna(0) * puts_df['calc_delta'].fillna(0)
     puts_df = puts_df[puts_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     puts_df['OptionType'] = 'Put'
 
@@ -4376,8 +4380,9 @@ def create_davi_chart(calls, puts, S):
     total_put_davi = puts_df['DAVI'].sum()
 
     # Create title with totals
+    metric_name = "Volume" if use_volume else "Open Interest"
     title_with_totals = (
-        f"Delta-Adjusted Value Index by Strike     "
+        f"Delta-Adjusted Value Index ({metric_name}) by Strike     "
         f"<span style='color: {call_color}'>{total_call_davi:,.0f}</span> | "
         f"<span style='color: {put_color}'>{total_put_davi:,.0f}</span>"
     )
