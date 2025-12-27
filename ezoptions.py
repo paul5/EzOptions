@@ -1292,11 +1292,11 @@ def create_oi_volume_charts(calls, puts, S):
     net_oi = calls_filtered.groupby('strike')['openInterest'].sum().sub(puts_filtered.groupby('strike')['openInterest'].sum(), fill_value=0)
     net_volume = calls_filtered.groupby('strike')['volume'].sum().sub(puts_filtered.groupby('strike')['volume'].sum(), fill_value=0)
     
-    # Calculate total values for titles (handle empty dataframes)
-    total_call_oi = calls_oi_df['openInterest'].sum() if not calls_oi_df.empty else 0
-    total_put_oi = puts_oi_df['openInterest'].sum() if not puts_oi_df.empty else 0
-    total_call_volume = calls_vol_df['volume'].sum() if not calls_vol_df.empty else 0
-    total_put_volume = puts_vol_df['volume'].sum() if not puts_vol_df.empty else 0
+    # Calculate total values for titles using the entire chain
+    total_call_oi = calls['openInterest'].sum()
+    total_put_oi = puts['openInterest'].sum()
+    total_call_volume = calls['volume'].sum()
+    total_put_volume = puts['volume'].sum()
     
     # Create titles with totals using HTML for colored values
     oi_title_with_totals = (
@@ -1840,9 +1840,9 @@ def create_volume_by_strike_chart(calls, puts, S):
     # Calculate Net Volume using filtered data
     net_volume = calls_filtered.groupby('strike')['volume'].sum().sub(puts_filtered.groupby('strike')['volume'].sum(), fill_value=0)
     
-    # Calculate total values for title (handle empty dataframes)
-    total_call_volume = calls_vol_df['volume'].sum() if not calls_vol_df.empty else 0
-    total_put_volume = puts_vol_df['volume'].sum() if not puts_vol_df.empty else 0
+    # Calculate total values for title using the entire chain
+    total_call_volume = calls['volume'].sum()
+    total_put_volume = puts['volume'].sum()
     
     # Create title with totals using HTML for colored values
     volume_title_with_totals = (
@@ -3817,9 +3817,9 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     else:  # VEX, Charm, Speed, Vomma
         net_exposure = calls_filtered.groupby('strike')[exposure_type].sum().add(puts_filtered.groupby('strike')[exposure_type].sum(), fill_value=0)
 
-    # Calculate total Greek values
-    total_call_value = calls_df[exposure_type].sum()
-    total_put_value = puts_df[exposure_type].sum()
+    # Calculate total Greek values using the entire chain
+    total_call_value = calls[exposure_type].fillna(0).sum()
+    total_put_value = puts[exposure_type].fillna(0).sum()
 
     # Get the metric being used and add it to the title
     metric_name = "Volume" if st.session_state.get('use_volume_for_greeks', False) else "Open Interest"
@@ -4359,6 +4359,10 @@ def create_davi_chart(calls, puts, S):
     puts_df = puts_df[puts_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     puts_df['OptionType'] = 'Put'
 
+    # Calculate totals for title using the entire chain (before filtering by strike range)
+    total_call_davi = calls_df['DAVI'].sum()
+    total_put_davi = puts_df['DAVI'].sum()
+
     # Calculate strike range around current price (percentage-based)
     strike_range = calculate_strike_range(S)
     min_strike = S - strike_range
@@ -4374,10 +4378,6 @@ def create_davi_chart(calls, puts, S):
         net_davi = net_davi.add(calls_df.groupby('strike')['DAVI'].sum(), fill_value=0)
     if not puts_df.empty:
         net_davi = net_davi.add(puts_df.groupby('strike')['DAVI'].sum(), fill_value=0)
-
-    # Calculate totals for title
-    total_call_davi = calls_df['DAVI'].sum()
-    total_put_davi = puts_df['DAVI'].sum()
 
     # Create title with totals
     metric_name = "Volume" if use_volume else "Open Interest"
