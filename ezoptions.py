@@ -581,7 +581,7 @@ def calculate_annualized_return(data, period='1y'):
     weekday_names = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday']
     annualized_returns.index = weekday_names
     
-    return annualized_returns * 100  # Convert to percentage
+    return annualized_returns.fillna(0) * 100  # Convert to percentage
 
 def create_weekday_returns_chart(returns):
     """Create a bar chart of weekday returns"""
@@ -907,13 +907,17 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
         if row['strike'] in strike_to_idx and row['expiry_date'] in expiry_to_idx:
             i = expiry_to_idx[row['expiry_date']]
             j = strike_to_idx[row['strike']]
-            call_premium[i, j] = row['volume'] * row['lastPrice'] * 100
+            vol = row['volume'] if pd.notna(row['volume']) else 0
+            price = row['lastPrice'] if pd.notna(row['lastPrice']) else 0
+            call_premium[i, j] = vol * price * 100
     
     for _, row in puts_df.iterrows():
         if row['strike'] in strike_to_idx and row['expiry_date'] in expiry_to_idx:
             i = expiry_to_idx[row['expiry_date']]
             j = strike_to_idx[row['strike']]
-            put_premium[i, j] = row['volume'] * row['lastPrice'] * 100
+            vol = row['volume'] if pd.notna(row['volume']) else 0
+            price = row['lastPrice'] if pd.notna(row['lastPrice']) else 0
+            put_premium[i, j] = vol * price * 100
     
     # Create heatmaps
     call_color = st.session_state.call_color
@@ -1038,13 +1042,17 @@ def create_premium_heatmap(calls_df, puts_df, filtered_strikes, selected_expiry_
         if row['strike'] in filtered_strikes and row['extracted_expiry'].strftime('%Y-%m-%d') in expiry_to_idx:
             strike_idx = strike_to_idx[row['strike']]
             expiry_idx = expiry_to_idx[row['extracted_expiry'].strftime('%Y-%m-%d')]
-            call_premium[expiry_idx][strike_idx] += row['volume'] * row['lastPrice'] * 100
+            vol = row['volume'] if pd.notna(row['volume']) else 0
+            price = row['lastPrice'] if pd.notna(row['lastPrice']) else 0
+            call_premium[expiry_idx][strike_idx] += vol * price * 100
     
     for _, row in puts_df.iterrows():
         if row['strike'] in filtered_strikes and row['extracted_expiry'].strftime('%Y-%m-%d') in expiry_to_idx:
             strike_idx = strike_to_idx[row['strike']]
             expiry_idx = expiry_to_idx[row['extracted_expiry'].strftime('%Y-%m-%d')]
-            put_premium[expiry_idx][strike_idx] += row['volume'] * row['lastPrice'] * 100
+            vol = row['volume'] if pd.notna(row['volume']) else 0
+            price = row['lastPrice'] if pd.notna(row['lastPrice']) else 0
+            put_premium[expiry_idx][strike_idx] += vol * price * 100
     
     # Create heatmaps
     call_color = st.session_state.call_color
@@ -1264,25 +1272,25 @@ def create_oi_volume_charts(calls, puts, S):
     puts_filtered = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
     
     # Create separate dataframes for OI and Volume, filtering out zeros
-    calls_oi_df = calls_filtered[['strike', 'openInterest']].copy()
+    calls_oi_df = calls_filtered[['strike', 'openInterest']].copy().fillna(0)
     calls_oi_df = calls_oi_df[calls_oi_df['openInterest'] > 0]  # Changed from != 0 to > 0
     calls_oi_df['OptionType'] = 'Call'
     
-    puts_oi_df = puts_filtered[['strike', 'openInterest']].copy()
+    puts_oi_df = puts_filtered[['strike', 'openInterest']].copy().fillna(0)
     puts_oi_df = puts_oi_df[puts_oi_df['openInterest'] > 0]  # Changed from != 0 to > 0
     puts_oi_df['OptionType'] = 'Put'
     
-    calls_vol_df = calls_filtered[['strike', 'volume']].copy()
+    calls_vol_df = calls_filtered[['strike', 'volume']].copy().fillna(0)
     calls_vol_df = calls_vol_df[calls_vol_df['volume'] > 0]  # Changed from != 0 to > 0
     calls_vol_df['OptionType'] = 'Call'
     
-    puts_vol_df = puts_filtered[['strike', 'volume']].copy()
+    puts_vol_df = puts_filtered[['strike', 'volume']].copy().fillna(0)
     puts_vol_df = puts_vol_df[puts_vol_df['volume'] > 0]  # Changed from != 0 to > 0
     puts_vol_df['OptionType'] = 'Put'
     
     # Calculate Net Open Interest and Net Volume using filtered data
-    net_oi = calls_filtered.groupby('strike')['openInterest'].sum() - puts_filtered.groupby('strike')['openInterest'].sum()
-    net_volume = calls_filtered.groupby('strike')['volume'].sum() - puts_filtered.groupby('strike')['volume'].sum()
+    net_oi = calls_filtered.groupby('strike')['openInterest'].sum().sub(puts_filtered.groupby('strike')['openInterest'].sum(), fill_value=0)
+    net_volume = calls_filtered.groupby('strike')['volume'].sum().sub(puts_filtered.groupby('strike')['volume'].sum(), fill_value=0)
     
     # Calculate total values for titles (handle empty dataframes)
     total_call_oi = calls_oi_df['openInterest'].sum() if not calls_oi_df.empty else 0
@@ -1821,16 +1829,16 @@ def create_volume_by_strike_chart(calls, puts, S):
     puts_filtered = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
     
     # Create separate dataframes for Volume, filtering out zeros
-    calls_vol_df = calls_filtered[['strike', 'volume']].copy()
+    calls_vol_df = calls_filtered[['strike', 'volume']].copy().fillna(0)
     calls_vol_df = calls_vol_df[calls_vol_df['volume'] > 0]
     calls_vol_df['OptionType'] = 'Call'
     
-    puts_vol_df = puts_filtered[['strike', 'volume']].copy()
+    puts_vol_df = puts_filtered[['strike', 'volume']].copy().fillna(0)
     puts_vol_df = puts_vol_df[puts_vol_df['volume'] > 0]
     puts_vol_df['OptionType'] = 'Put'
     
     # Calculate Net Volume using filtered data
-    net_volume = calls_filtered.groupby('strike')['volume'].sum() - puts_filtered.groupby('strike')['volume'].sum()
+    net_volume = calls_filtered.groupby('strike')['volume'].sum().sub(puts_filtered.groupby('strike')['volume'].sum(), fill_value=0)
     
     # Calculate total values for title (handle empty dataframes)
     total_call_volume = calls_vol_df['volume'].sum() if not calls_vol_df.empty else 0
@@ -3771,11 +3779,11 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     put_color = st.session_state.put_color
 
     # Filter out zero values
-    calls_df = calls[['strike', exposure_type]].copy()
+    calls_df = calls[['strike', exposure_type]].copy().fillna(0)
     calls_df = calls_df[calls_df[exposure_type] != 0]
     calls_df['OptionType'] = 'Call'
 
-    puts_df = puts[['strike', exposure_type]].copy()
+    puts_df = puts[['strike', exposure_type]].copy().fillna(0)
     puts_df = puts_df[puts_df[exposure_type] != 0]
     puts_df['OptionType'] = 'Put'
 
@@ -3795,7 +3803,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     # Calculate Net Exposure based on type using filtered data
     if exposure_type == 'GEX' or exposure_type == 'GEX_notional':
         if st.session_state.gex_type == 'Net':
-            net_exposure = calls_filtered.groupby('strike')[exposure_type].sum() - puts_filtered.groupby('strike')[exposure_type].sum()
+            net_exposure = calls_filtered.groupby('strike')[exposure_type].sum().sub(puts_filtered.groupby('strike')[exposure_type].sum(), fill_value=0)
         else:  # Absolute
             calls_gex = calls_filtered.groupby('strike')[exposure_type].sum()
             puts_gex = puts_filtered.groupby('strike')[exposure_type].sum()
@@ -3805,9 +3813,9 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 put_val = abs(puts_gex.get(strike, 0))
                 net_exposure[strike] = call_val if call_val >= put_val else -put_val
     elif exposure_type == 'DEX':
-        net_exposure = calls_filtered.groupby('strike')[exposure_type].sum() + puts_filtered.groupby('strike')[exposure_type].sum()
+        net_exposure = calls_filtered.groupby('strike')[exposure_type].sum().add(puts_filtered.groupby('strike')[exposure_type].sum(), fill_value=0)
     else:  # VEX, Charm, Speed, Vomma
-        net_exposure = calls_filtered.groupby('strike')[exposure_type].sum() + puts_filtered.groupby('strike')[exposure_type].sum()
+        net_exposure = calls_filtered.groupby('strike')[exposure_type].sum().add(puts_filtered.groupby('strike')[exposure_type].sum(), fill_value=0)
 
     # Calculate total Greek values
     total_call_value = calls_df[exposure_type].sum()
@@ -4088,12 +4096,14 @@ def calculate_max_pain(calls, puts):
 
     for strike in unique_strikes:
         # Calculate call pain (loss to option writers)
-        call_pain = calls[calls['strike'] <= strike]['openInterest'] * (strike - calls[calls['strike'] <= strike]['strike'])
+        call_subset = calls[calls['strike'] <= strike]
+        call_pain = call_subset['openInterest'].fillna(0) * (strike - call_subset['strike'])
         call_pain_sum = call_pain.sum()
         call_pain_by_strike[strike] = call_pain_sum
         
         # Calculate put pain (loss to option writers)
-        put_pain = puts[puts['strike'] >= strike]['openInterest'] * (puts[puts['strike'] >= strike]['strike'] - strike)
+        put_subset = puts[puts['strike'] >= strike]
+        put_pain = put_subset['openInterest'].fillna(0) * (put_subset['strike'] - strike)
         put_pain_sum = put_pain.sum()
         put_pain_by_strike[strike] = put_pain_sum
         
@@ -4337,11 +4347,11 @@ def create_davi_chart(calls, puts, S):
     
     # Calculate DAVI for calls and puts with filtering
     # Only keep non-zero values
-    calls_df['DAVI'] = (calls_df['volume'] + calls_df['openInterest']) * 100 * calls_df['lastPrice'] * calls_df['calc_delta']
+    calls_df['DAVI'] = (calls_df['volume'].fillna(0) + calls_df['openInterest'].fillna(0)) * 100 * calls_df['lastPrice'].fillna(0) * calls_df['calc_delta'].fillna(0)
     calls_df = calls_df[calls_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     calls_df['OptionType'] = 'Call'
 
-    puts_df['DAVI'] = (puts_df['volume'] + puts_df['openInterest']) * 100 * puts_df['lastPrice'] * puts_df['calc_delta']
+    puts_df['DAVI'] = (puts_df['volume'].fillna(0) + puts_df['openInterest'].fillna(0)) * 100 * puts_df['lastPrice'].fillna(0) * puts_df['calc_delta'].fillna(0)
     puts_df = puts_df[puts_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     puts_df['OptionType'] = 'Put'
 
