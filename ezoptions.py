@@ -2828,7 +2828,7 @@ def reset_session_state():
         'rsi_period',
         'fibonacci_levels',
         'vwap_enabled',
-        'use_volume_for_greeks',
+        'exposure_metric',
         'delta_adjusted_exposures',
         'global_selected_expiries'
     }
@@ -3346,15 +3346,20 @@ def chart_settings():
         # Greek Exposure Settings - FIRST SETTING
         st.write("Greek Exposure Settings:")
         
-        # Initialize volume/OI preference setting
-        if 'use_volume_for_greeks' not in st.session_state:
-            st.session_state.use_volume_for_greeks = False  # Default to Open Interest
+        # Initialize exposure metric setting
+        if 'exposure_metric' not in st.session_state:
+            # Migration from old setting if exists
+            if st.session_state.get('use_volume_for_greeks', False):
+                st.session_state.exposure_metric = 'Volume'
+            else:
+                st.session_state.exposure_metric = 'Open Interest'
         
-        st.checkbox(
-            "Use Volume instead of Open Interest for Greek exposures",
-            value=st.session_state.use_volume_for_greeks,
-            key='use_volume_for_greeks',
-            help="When enabled, Greek exposures (Gamma, Vanna, Delta, Charm, Speed, Vomma) will use Volume instead of Open Interest in calculations"
+        st.selectbox(
+            "Exposure Calculation Metric:",
+            options=['Open Interest', 'Volume', 'Volume Weighted by OI'],
+            index=['Open Interest', 'Volume', 'Volume Weighted by OI'].index(st.session_state.exposure_metric),
+            key='exposure_metric',
+            help="Choose the metric used for weighting Greek exposures"
         )
 
         # Initialize delta-adjusted exposures setting
@@ -3726,31 +3731,43 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     puts = puts.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"])
 
     # Determine which metric to use based on settings
-    volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
+    metric_type = st.session_state.get('exposure_metric', 'Open Interest')
+    
+    if metric_type == 'Volume':
+        calls_metric = calls['volume']
+        puts_metric = puts['volume']
+    elif metric_type == 'Volume Weighted by OI':
+        # Geometric Mean: sqrt(Volume * OI)
+        # This balances both metrics and keeps the scale reasonable
+        calls_metric = np.sqrt(calls['volume'].fillna(0) * calls['openInterest'].fillna(0))
+        puts_metric = np.sqrt(puts['volume'].fillna(0) * puts['openInterest'].fillna(0))
+    else: # Open Interest
+        calls_metric = calls['openInterest']
+        puts_metric = puts['openInterest']
 
-    # GEX = Gamma * Volume/OI * Contract Size * Spot Price^2 * 0.01 (Dollar Gamma per 1% move in underlying)
-    calls["GEX"] = calls["calc_gamma"] * calls[volume_metric] * 100 * S * S * 0.01
-    puts["GEX"] = puts["calc_gamma"] * puts[volume_metric] * 100 * S * S * 0.01
+    # GEX = Gamma * Metric * Contract Size * Spot Price^2 * 0.01 (Dollar Gamma per 1% move in underlying)
+    calls["GEX"] = calls["calc_gamma"] * calls_metric * 100 * S * S * 0.01
+    puts["GEX"] = puts["calc_gamma"] * puts_metric * 100 * S * S * 0.01
     
-    # VEX = Vanna * Volume/OI * Contract Size * Spot Price * 0.01 (Dollar Vanna per 1 vol point change)
-    calls["VEX"] = calls["calc_vanna"] * calls[volume_metric] * 100 * S * 0.01
-    puts["VEX"] = puts["calc_vanna"] * puts[volume_metric] * 100 * S * 0.01
+    # VEX = Vanna * Metric * Contract Size * Spot Price * 0.01 (Dollar Vanna per 1 vol point change)
+    calls["VEX"] = calls["calc_vanna"] * calls_metric * 100 * S * 0.01
+    puts["VEX"] = puts["calc_vanna"] * puts_metric * 100 * S * 0.01
     
-    # DEX = Delta * Volume/OI * Contract Size * Spot Price (Dollar Delta Exposure)
-    calls["DEX"] = calls["calc_delta"] * calls[volume_metric] * 100 * S
-    puts["DEX"] = puts["calc_delta"] * puts[volume_metric] * 100 * S
+    # DEX = Delta * Metric * Contract Size * Spot Price (Dollar Delta Exposure)
+    calls["DEX"] = calls["calc_delta"] * calls_metric * 100 * S
+    puts["DEX"] = puts["calc_delta"] * puts_metric * 100 * S
     
-    # Charm = Charm * Volume/OI * Contract Size * Spot Price / 365 (Dollar Charm per 1 day decay)
-    calls["Charm"] = calls["calc_charm"] * calls[volume_metric] * 100 * S / 365.0
-    puts["Charm"] = puts["calc_charm"] * puts[volume_metric] * 100 * S / 365.0
+    # Charm = Charm * Metric * Contract Size * Spot Price / 365 (Dollar Charm per 1 day decay)
+    calls["Charm"] = calls["calc_charm"] * calls_metric * 100 * S / 365.0
+    puts["Charm"] = puts["calc_charm"] * puts_metric * 100 * S / 365.0
     
-    # Speed = Speed * Volume/OI * Contract Size * Spot Price^2 * 0.01 (Dollar Speed per 1% move)
-    calls["Speed"] = calls["calc_speed"] * calls[volume_metric] * 100 * S * S * 0.01
-    puts["Speed"] = puts["calc_speed"] * puts[volume_metric] * 100 * S * S * 0.01
+    # Speed = Speed * Metric * Contract Size * Spot Price^2 * 0.01 (Dollar Speed per 1% move)
+    calls["Speed"] = calls["calc_speed"] * calls_metric * 100 * S * S * 0.01
+    puts["Speed"] = puts["calc_speed"] * puts_metric * 100 * S * S * 0.01
     
-    # Vomma = Vomma * Volume/OI * Contract Size * 0.01 (Dollar Vomma per 1 vol point change)
-    calls["Vomma"] = calls["calc_vomma"] * calls[volume_metric] * 100 * 0.01
-    puts["Vomma"] = puts["calc_vomma"] * puts[volume_metric] * 100 * 0.01
+    # Vomma = Vomma * Metric * Contract Size * 0.01 (Dollar Vomma per 1 vol point change)
+    calls["Vomma"] = calls["calc_vomma"] * calls_metric * 100 * 0.01
+    puts["Vomma"] = puts["calc_vomma"] * puts_metric * 100 * 0.01
 
     # Apply delta adjustment if enabled
     if st.session_state.get('delta_adjusted_exposures', False):
@@ -3822,7 +3839,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     total_put_value = puts[exposure_type].fillna(0).sum()
 
     # Get the metric being used and add it to the title
-    metric_name = "Volume" if st.session_state.get('use_volume_for_greeks', False) else "Open Interest"
+    metric_name = st.session_state.get('exposure_metric', 'Open Interest')
     delta_adjusted_label = " (Δ-Adjusted)" if st.session_state.get('delta_adjusted_exposures', False) and exposure_type != 'DEX' else ""
     
     # Update title to include total Greek values with colored values using HTML and metric info
@@ -4346,16 +4363,25 @@ def create_davi_chart(calls, puts, S):
             puts_df["calc_delta"] = puts_df.apply(lambda row: max(0, min(1, (row["strike"] - S) / (S * 0.1))), axis=1)
     
     # Determine which metric to use
-    use_volume = st.session_state.get('use_volume_for_greeks', False)
-    metric_col = 'volume' if use_volume else 'openInterest'
+    metric_type = st.session_state.get('exposure_metric', 'Open Interest')
+    
+    if metric_type == 'Volume':
+        calls_metric = calls_df['volume'].fillna(0)
+        puts_metric = puts_df['volume'].fillna(0)
+    elif metric_type == 'Volume Weighted by OI':
+        calls_metric = np.sqrt(calls_df['volume'].fillna(0) * calls_df['openInterest'].fillna(0))
+        puts_metric = np.sqrt(puts_df['volume'].fillna(0) * puts_df['openInterest'].fillna(0))
+    else: # Open Interest
+        calls_metric = calls_df['openInterest'].fillna(0)
+        puts_metric = puts_df['openInterest'].fillna(0)
 
     # Calculate DAVI for calls and puts with filtering
     # Only keep non-zero values
-    calls_df['DAVI'] = calls_df[metric_col].fillna(0) * 100 * calls_df['lastPrice'].fillna(0) * calls_df['calc_delta'].fillna(0)
+    calls_df['DAVI'] = calls_metric * 100 * calls_df['lastPrice'].fillna(0) * calls_df['calc_delta'].fillna(0)
     calls_df = calls_df[calls_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     calls_df['OptionType'] = 'Call'
 
-    puts_df['DAVI'] = puts_df[metric_col].fillna(0) * 100 * puts_df['lastPrice'].fillna(0) * puts_df['calc_delta'].fillna(0)
+    puts_df['DAVI'] = puts_metric * 100 * puts_df['lastPrice'].fillna(0) * puts_df['calc_delta'].fillna(0)
     puts_df = puts_df[puts_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     puts_df['OptionType'] = 'Put'
 
@@ -4380,7 +4406,7 @@ def create_davi_chart(calls, puts, S):
         net_davi = net_davi.add(puts_df.groupby('strike')['DAVI'].sum(), fill_value=0)
 
     # Create title with totals
-    metric_name = "Volume" if use_volume else "Open Interest"
+    metric_name = metric_type
     title_with_totals = (
         f"Delta-Adjusted Value Index ({metric_name}) by Strike     "
         f"<span style='color: {call_color}'>{total_call_davi:,.0f}</span> | "
@@ -5699,7 +5725,14 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     price_col = 'lastPrice' if 'lastPrice' in df.columns else 'ask'
                     
                     # Determine which volume metric to use
-                    volume_metric = 'volume' if st.session_state.get('use_volume_for_greeks', False) else 'openInterest'
+                    metric_type = st.session_state.get('exposure_metric', 'Open Interest')
+                    
+                    if metric_type == 'Volume':
+                        metric_series = df['volume']
+                    elif metric_type == 'Volume Weighted by OI':
+                        metric_series = np.sqrt(df['volume'].fillna(0) * df['openInterest'].fillna(0))
+                    else: # Open Interest
+                        metric_series = df['openInterest']
 
                     # Get delta adjustment factor
                     delta_adj = 1.0
@@ -5714,22 +5747,22 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     # Notional = Greek Exposure (per $1 move) × Contract Premium (to weight by notional value)
                     if exposure_col == "GEX":
                         # Notional = Gamma × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj * move_scale
+                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * metric_series * 100 * spot_price * df[price_col] * delta_adj * move_scale
                     elif exposure_col == "VEX":
                         # Notional = Vanna × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_vanna'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj
+                        df[f'{exposure_col}_notional'] = df['calc_vanna'] * metric_series * 100 * spot_price * df[price_col] * delta_adj
                     elif exposure_col == "DEX":
                         # Notional = Delta × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_delta'] * df[volume_metric] * 100 * spot_price * df[price_col]
+                        df[f'{exposure_col}_notional'] = df['calc_delta'] * metric_series * 100 * spot_price * df[price_col]
                     elif exposure_col == "Charm":
                         # Notional = Charm × Volume/OI × Contract Size × Spot Price × Contract Price / 365
-                        df[f'{exposure_col}_notional'] = df['calc_charm'] * df[volume_metric] * 100 * spot_price * df[price_col] / 365.0 * delta_adj
+                        df[f'{exposure_col}_notional'] = df['calc_charm'] * metric_series * 100 * spot_price * df[price_col] / 365.0 * delta_adj
                     elif exposure_col == "Speed":
                         # Notional = Speed × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_speed'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj * move_scale
+                        df[f'{exposure_col}_notional'] = df['calc_speed'] * metric_series * 100 * spot_price * df[price_col] * delta_adj * move_scale
                     elif exposure_col == "Vomma":
                         # Notional = Vomma × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_vomma'] * df[volume_metric] * 100 * spot_price * df[price_col] * delta_adj
+                        df[f'{exposure_col}_notional'] = df['calc_vomma'] * metric_series * 100 * spot_price * df[price_col] * delta_adj
                     
                     return df
                 
@@ -7584,7 +7617,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 date_labels = [d.strftime("%Y-%m-%d") if hasattr(d, 'strftime') else str(d) for d in dates_with_data]
                 
                 # Get metric name
-                metric_name = "Volume" if st.session_state.get('use_volume_for_greeks', False) else "Open Interest"
+                metric_name = st.session_state.get('exposure_metric', 'Open Interest')
                 delta_adjusted_label = " (Δ-Adjusted)" if st.session_state.get('delta_adjusted_exposures', False) and exposure_type != 'DEX' else ""
                 
                 # Calculate dynamic height based on number of strikes and text size
