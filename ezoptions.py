@@ -7583,7 +7583,8 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 elif exposure_type == 'DEX':
                     net_exposure = call_exposure + put_exposure
                 else:
-                    net_exposure = call_exposure - put_exposure
+                    # For VEX, Charm, Speed, Vomma, we want to ADD them (like in create_exposure_bar_chart)
+                    net_exposure = call_exposure + put_exposure
                 
                 # Ensure no NaNs in net exposure
                 net_exposure = np.nan_to_num(net_exposure)
