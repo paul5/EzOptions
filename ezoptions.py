@@ -6301,7 +6301,7 @@ elif st.session_state.current_page == "Dashboard":
                             ),
                             height=600,
                             hovermode='x unified',
-                            margin=dict(r=150, l=50),
+                            margin=dict(r=10, l=50),
                             xaxis=dict(
                                 autorange=True, 
                                 rangeslider=dict(visible=False),
@@ -6317,8 +6317,8 @@ elif st.session_state.current_page == "Dashboard":
                             ),
                             showlegend=bool(st.session_state.get('show_technical_indicators') and st.session_state.get('selected_indicators')),  # Show legend when technical indicators are enabled
                             legend=dict(
-                                x=1.02,
-                                y=1,
+                                x=0.01,
+                                y=0.99,
                                 xanchor="left",
                                 yanchor="top",
                                 bgcolor="rgba(0,0,0,0.5)",
@@ -6447,7 +6447,23 @@ elif st.session_state.current_page == "Dashboard":
                             st.markdown("---")
                     # Display selected charts
                     if "Intraday Price" in selected_charts:
-                        st.plotly_chart(fig_intraday, width='stretch', key="Dashboard_intraday_chart")
+                        st.plotly_chart(
+                            fig_intraday,
+                            width='stretch',
+                            key="Dashboard_intraday_chart",
+                            config={
+                                'modeBarButtonsToAdd': [
+                                    'drawline',
+                                    'drawopenpath',
+                                    'drawcircle',
+                                    'drawrect',
+                                    'eraseshape'
+                                ],
+                                'displaylogo': False,
+                                'scrollZoom': True,
+                                'edits': {'shapePosition': True}
+                            }
+                        )
                     
                     supplemental_charts = []
                     for chart, fig in [
