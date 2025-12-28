@@ -2830,7 +2830,8 @@ def reset_session_state():
         'vwap_enabled',
         'exposure_metric',
         'delta_adjusted_exposures',
-        'global_selected_expiries'
+        'global_selected_expiries',
+        'saved_exposure_heatmap_type'
     }
     
     # Initialize visibility settings if they don't exist
@@ -7487,7 +7488,9 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     default_index = 0
 
                 def update_exposure_type():
-                    st.session_state.saved_exposure_heatmap_type = st.session_state.exposure_heatmap_type
+                    val = st.session_state.get("exposure_heatmap_type")
+                    if val is not None:
+                        st.session_state.saved_exposure_heatmap_type = val
 
                 selected_exposure_name = st.selectbox(
                     "Select Exposure Type:",
