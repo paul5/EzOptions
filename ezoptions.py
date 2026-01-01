@@ -255,7 +255,7 @@ def add_technical_indicators_to_chart(fig, indicators, fibonacci_levels=None):
                 line_color="rgba(255, 255, 255, 0.4)",
                 annotation_text=f"Fib {level_name}",
                 annotation_position="right",
-                annotation_font_size=10
+                annotation_font_size=st.session_state.chart_text_size
             )
     
     return fig
@@ -2817,8 +2817,8 @@ def reset_session_state():
         'candlestick_type',
         'show_vix_overlay',
         'gex_type',
-        'show_gex_levels',
-        'show_dex_levels',
+        'intraday_exposure_levels',
+        'show_straddle',
         'show_technical_indicators',
         'selected_indicators',
         'ema_periods',
@@ -3298,13 +3298,12 @@ page_icons = {
     "GEX Surface": "🗻",
     "IV Surface": "🌐",
     "Implied Probabilities": "🎲",
-    "Analysis": "🔍",
-    "Calculated Greeks": "🧮"
+    "Analysis": "🔍"
 }
 
 pages = ["Dashboard", "OI & Volume", "Gamma Exposure", "Delta Exposure", 
           "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Exposure by Notional Value", "Delta-Adjusted Value Index", "Max Pain", "Exposure Heatmap", "GEX Surface", "IV Surface",
-          "Implied Probabilities", "Analysis", "Calculated Greeks"]
+          "Implied Probabilities", "Analysis"]
 
 # Create page options with icons
 page_options = [f"{page_icons[page]} {page}" for page in pages]
@@ -3568,15 +3567,41 @@ def chart_settings():
         # Add intraday chart level settings
         st.write("Intraday Chart Levels:")
         
-        # Initialize GEX and DEX level settings if not already set
-        if 'show_gex_levels' not in st.session_state:
-            st.session_state.show_gex_levels = True  # Default to showing GEX levels
-        if 'show_dex_levels' not in st.session_state:
-            st.session_state.show_dex_levels = False  # Default to not showing DEX levels
+        # Initialize exposure levels setting
+        if 'intraday_exposure_levels' not in st.session_state:
+            # Migrate from old settings
+            defaults = []
+            if st.session_state.get('show_gex_levels', True):
+                defaults.append('GEX')
+            if st.session_state.get('show_dex_levels', False):
+                defaults.append('DEX')
+            st.session_state.intraday_exposure_levels = defaults
+
+        if 'intraday_level_count' not in st.session_state:
+            st.session_state.intraday_level_count = 5
+
+        if 'show_straddle' not in st.session_state:
+            st.session_state.show_straddle = False  # Default to not showing Straddle
+
+        # Exposure levels multiselect
+        exposure_options = ['GEX', 'DEX', 'VEX', 'Charm', 'Speed', 'Vomma']
+        st.multiselect(
+            "Show Levels for:",
+            options=exposure_options,
+            default=st.session_state.intraday_exposure_levels,
+            key='intraday_exposure_levels'
+        )
         
-        # GEX and DEX level toggles
-        st.checkbox("Show GEX Levels", value=st.session_state.show_gex_levels, key='show_gex_levels')
-        st.checkbox("Show DEX Levels", value=st.session_state.show_dex_levels, key='show_dex_levels')
+        st.number_input(
+            "Number of Levels to Show",
+            min_value=1,
+            max_value=50,
+            value=st.session_state.intraday_level_count,
+            step=1,
+            key='intraday_level_count'
+        )
+        
+        st.checkbox("Show Straddle", value=st.session_state.show_straddle, key='show_straddle')
 
         # Add refresh rate control before chart type
         if 'refresh_rate' not in st.session_state:
@@ -5824,134 +5849,6 @@ elif st.session_state.current_page == "Exposure by Notional Value":
                     else:
                         st.warning("Vomma data not available.")
 
-elif st.session_state.current_page == "Calculated Greeks":
-    with main_placeholder.container():
-        st.write("This page calculates delta, gamma, and vanna based on market data.")
-        
-        col1, col2 = st.columns([0.94, 0.06])
-        with col1:
-            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="calculated_greeks_ticker")
-        with col2:
-            st.write("")  # Add some spacing
-            st.write("")  # Add some spacing
-            if st.button("🔄", key="refresh_button_greeks"):
-                st.cache_data.clear()  # Clear the cache before rerunning
-                st.rerun()
-        ticker = format_ticker(user_ticker)
-        
-        if ticker:
-            # Fetch price once
-            S = get_current_price(ticker)
-            if S is None:
-                st.error("Could not fetch current price.")
-                st.stop()
-
-            stock = yf.Ticker(ticker)
-            available_dates = stock.options
-            if not available_dates:
-                st.warning("No options data available for this ticker.")
-            else:
-                # Get nearest expiry and use it as default
-                nearest_expiry = get_nearest_expiry(available_dates)
-                expiry_date_str = st.selectbox(
-                    "Select an Exp. Date:", 
-                    options=available_dates, 
-                    index=available_dates.index(nearest_expiry) if nearest_expiry else None, 
-                    key="calculated_greeks_expiry_main"
-                )
-                
-                if expiry_date_str:  # Only proceed if an expiry date is selected
-                    
-                    selected_expiry = datetime.strptime(expiry_date_str, '%Y-%m-%d').date()
-                    calls, puts = fetch_options_for_date(ticker, expiry_date_str, S)
-                    
-                    if calls.empty and puts.empty:
-                        st.warning("No options data available for this ticker.")
-                        st.stop()
-
-                    # Rest of the Calculated Greeks logic
-                    combined = pd.concat([calls, puts])
-                    combined = combined.dropna(subset=['extracted_expiry'])
-                    calls = calls[calls['extracted_expiry'] == selected_expiry]
-                    puts = puts[puts['extracted_expiry'] == selected_expiry]
-                    
-                    # Get stock price
-                    stock = yf.Ticker(ticker)
-                    S = get_last_price(stock)
-                    if S is None:
-                        st.error("Could not fetch underlying price.")
-                        st.stop()
-
-                    S = round(S, 2)
-                    st.markdown(f"**Underlying Price (S):** {S}")
-                    
-                    # Calculate time to expiration more precisely
-                    t = calculate_time_to_expiration(selected_expiry)
-                    
-                    if t <= 0:
-                         today = get_now_et().date()
-                         if selected_expiry < today:
-                             st.error("The selected expiration date is in the past!")
-                             st.stop()
-                         t = 1e-5
-                    
-                    t = max(t, 1e-5)
-                    st.markdown(f"**Time to Expiration (t in years):** {t:.4f}")
-                    
-                    def compute_row_greeks(row, flag):
-                        try:
-                            sigma = row.get("impliedVolatility", None)
-                            if sigma is None or sigma <= 0:
-                                return pd.Series({"calc_delta": None, "calc_gamma": None, "calc_vanna": None})
-                            
-                            delta_val, gamma_val, vanna_val = calculate_greeks(flag, S, row["strike"], t, sigma)
-                            return pd.Series({
-                                "calc_delta": delta_val,
-                                "calc_gamma": gamma_val,
-                                "calc_vanna": vanna_val
-                            })
-                        except Exception as e:
-                            st.warning(f"Error calculating greeks: {str(e)}")
-                            return pd.Series({"calc_delta": None, "calc_gamma": None, "calc_vanna": None})
-
-                    results = {}
-                    
-                    # Process calls
-                    if not calls.empty:
-                        try:
-                            calls_copy = calls.copy()
-                            greeks_calls = calls_copy.apply(lambda row: compute_row_greeks(row, "c"), axis=1)
-                            results["Calls"] = pd.concat([calls_copy, greeks_calls], axis=1)
-                        except Exception as e:
-                            st.warning(f"Error processing calls: {str(e)}")
-                    else:
-                        st.warning("No call options data available.")
-
-                    # Process puts
-                    if not puts.empty:
-                        try:
-                            puts_copy = puts.copy()
-                            greeks_puts = puts_copy.apply(lambda row: compute_row_greeks(row, "p"), axis=1)
-                            results["Puts"] = pd.concat([puts_copy, greeks_puts], axis=1)
-                        except Exception as e:
-                            st.warning(f"Error processing puts: {str(e)}")
-                    else:
-                        st.warning("No put options data available.")
-
-                    # Display results
-                    for typ, df in results.items():
-                        try:
-                            st.write(f"### {typ} with Calculated Greeks")
-                            st.dataframe(df[['contractSymbol', 'strike', 'impliedVolatility', 'calc_delta', 'calc_gamma', 'calc_vanna']])
-                            fig = px.scatter(df, x="strike", y="calc_delta", title=f"{typ}: Delta vs. Strike",
-                                         labels={"strike": "Strike", "calc_delta": "Calculated Delta"})
-                            st.plotly_chart(fig, width='stretch', key=f"Calculated Greeks_{typ.lower()}_scatter")
-                        except Exception as e:
-                            st.error(f"Error displaying {typ} data: {str(e)}")
-                else:
-                    st.warning("Please select an expiration date to view the calculations.")
-                    st.stop()
-
 elif st.session_state.current_page == "Dashboard":
     with main_placeholder.container():
         # Create a single input for ticker with refresh button
@@ -6159,13 +6056,13 @@ elif st.session_state.current_page == "Dashboard":
                             y_min = min(y_min, current_price - padding)
                             y_max = max(y_max, current_price + padding)
 
-                        # Process options data (GEX and DEX levels)
+                        # Process options data (Exposure levels)
                         calls['OptionType'] = 'Call'
                         puts['OptionType'] = 'Put'
                         added_strikes = set()
 
-                        # Add GEX levels if enabled
-                        if st.session_state.show_gex_levels:
+                        # Iterate through selected exposure types
+                        for exposure_type in st.session_state.intraday_exposure_levels:
                             # Calculate strike range around current price (percentage-based)
                             strike_range = calculate_strike_range(current_price)
                             min_strike = current_price - strike_range
@@ -6175,106 +6072,49 @@ elif st.session_state.current_page == "Dashboard":
                             calls_filtered = calls[(calls['strike'] >= min_strike) & (calls['strike'] <= max_strike)]
                             puts_filtered = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
                             
-                            # Calculate Net or Absolute GEX based on gex_type setting
-                            if st.session_state.gex_type == 'Net':
-                                # Net GEX: Calls positive, Puts negative
-                                net_gex = calls_filtered.groupby('strike')['GEX'].sum().sub(puts_filtered.groupby('strike')['GEX'].sum(), fill_value=0)
-                            else:  # Absolute
+                            # Calculate Net or Absolute Exposure
+                            if exposure_type == 'GEX' and st.session_state.gex_type == 'Absolute':
                                 # Absolute GEX: Take the larger absolute value at each strike
-                                calls_gex = calls_filtered.groupby('strike')['GEX'].sum()
-                                puts_gex = puts_filtered.groupby('strike')['GEX'].sum()
-                                net_gex = pd.Series(index=set(calls_gex.index) | set(puts_gex.index))
-                                for strike in net_gex.index:
-                                    call_val = abs(calls_gex.get(strike, 0))
-                                    put_val = abs(puts_gex.get(strike, 0))
-                                    net_gex[strike] = call_val if call_val >= put_val else -put_val
+                                calls_exp = calls_filtered.groupby('strike')[exposure_type].sum()
+                                puts_exp = puts_filtered.groupby('strike')[exposure_type].sum()
+                                net_exp = pd.Series(index=set(calls_exp.index) | set(puts_exp.index))
+                                for strike in net_exp.index:
+                                    call_val = abs(calls_exp.get(strike, 0))
+                                    put_val = abs(puts_exp.get(strike, 0))
+                                    net_exp[strike] = call_val if call_val >= put_val else -put_val
+                            elif exposure_type == 'GEX':
+                                # Net GEX: Calls positive, Puts negative
+                                net_exp = calls_filtered.groupby('strike')[exposure_type].sum().sub(puts_filtered.groupby('strike')[exposure_type].sum(), fill_value=0)
+                            else:
+                                # Other exposures: Additive (DEX, VEX, etc.)
+                                net_exp = calls_filtered.groupby('strike')[exposure_type].sum().add(puts_filtered.groupby('strike')[exposure_type].sum(), fill_value=0)
                             
-                            # Remove zero values and get top 5 by absolute value
-                            net_gex = net_gex[net_gex != 0]
-                            if not net_gex.empty:
+                            # Remove zero values and get top N by absolute value
+                            net_exp = net_exp[net_exp != 0]
+                            if not net_exp.empty:
                                 # Create DataFrame for easier manipulation
-                                gex_df = pd.DataFrame({
-                                    'strike': net_gex.index,
-                                    'GEX': net_gex.values,
-                                    'abs_GEX': abs(net_gex.values)
+                                exp_df = pd.DataFrame({
+                                    'strike': net_exp.index,
+                                    'Value': net_exp.values,
+                                    'abs_Value': abs(net_exp.values)
                                 })
                                 
-                                # Get top 5 by absolute GEX value
-                                top5_gex = gex_df.nlargest(5, 'abs_GEX')
-                                top5_gex['distance'] = abs(top5_gex['strike'] - current_price)
-                                nearest_3_gex = top5_gex.nsmallest(3, 'distance')
-                                max_gex = top5_gex['abs_GEX'].max()
-
-                                for row in top5_gex.itertuples():
-                                    if row.strike not in added_strikes and not pd.isna(row.GEX) and row.GEX != 0:
-                                        # Calculate intensity based on GEX value relative to max
-                                        intensity = max(0.6, min(1.0, row.abs_GEX / max_gex))  # Use abs_GEX for intensity
-                                        
-                                        # Determine color based on GEX sign (positive = call color, negative = put color)
-                                        base_color = st.session_state.call_color if row.GEX >= 0 else st.session_state.put_color
-                                        
-                                        # Convert hex to RGB
-                                        rgb = tuple(int(base_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-                                        
-                                        # Create color with intensity
-                                        color = f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {intensity})'
-                                        
-                                        fig_intraday.add_shape(
-                                            type='line',
-                                            x0=intraday_data.index[0],
-                                            x1=intraday_data.index[-1],
-                                            y0=row.strike,
-                                            y1=row.strike,
-                                            line=dict(
-                                                color=color,
-                                                width=2
-                                            ),
-                                            xref='x',
-                                            yref='y',
-                                            layer='below'
-                                        )
-                                        
-                                        # Add text annotation positioned to the right of the chart
-                                        gex_label = f"GEX {format_large_number(row.GEX)}"
-                                        fig_intraday.add_annotation(
-                                            x=0.92,
-                                            y=row.strike,
-                                            text=gex_label,
-                                            font=dict(color=color, size=st.session_state.chart_text_size - 2),
-                                            showarrow=False,
-                                            xref="paper",  # Use paper coordinates for x
-                                            yref="y",      # Use data coordinates for y
-                                            xanchor="left"
-                                        )
-                                        added_strikes.add(row.strike)
-
-                                # Include GEX strikes in y-axis range
-                                y_min = min(y_min, nearest_3_gex['strike'].min() - padding)
-                                y_max = max(y_max, nearest_3_gex['strike'].max() + padding)
-
-                        # Add DEX levels if enabled
-                        if st.session_state.show_dex_levels:
-                            # Create combined DEX dataframe with absolute values for ranking
-                            dex_options_df = pd.concat([calls, puts]).dropna(subset=['DEX'])
-                            
-                            if not dex_options_df.empty:
-                                # Group by strike to get Net DEX (consistent with bar chart)
-                                net_dex = dex_options_df.groupby('strike')['DEX'].sum().reset_index()
-                                net_dex['abs_DEX'] = abs(net_dex['DEX'])
+                                # Get top N by absolute value
+                                level_count = st.session_state.get('intraday_level_count', 5)
+                                top_levels = exp_df.nlargest(level_count, 'abs_Value')
+                                top_levels['distance'] = abs(top_levels['strike'] - current_price)
                                 
-                                # Get top 5 by absolute Net DEX
-                                top5_dex = net_dex.nlargest(5, 'abs_DEX')
-                                top5_dex['distance'] = abs(top5_dex['strike'] - current_price)
-                                nearest_3_dex = top5_dex.nsmallest(3, 'distance')
-                                max_dex = abs(top5_dex['DEX']).max()
+                                # Scale to include the nearest 5 levels (or fewer if count is small)
+                                levels_to_scale = top_levels.nsmallest(min(len(top_levels), 5), 'distance')
+                                max_val = top_levels['abs_Value'].max()
 
-                                for row in top5_dex.itertuples():
-                                    if row.strike not in added_strikes and not pd.isna(row.DEX) and row.DEX != 0:
-                                        # Calculate intensity based on DEX value relative to max
-                                        intensity = max(0.6, min(1.0, abs(row.DEX) / max_dex))
+                                for row in top_levels.itertuples():
+                                    if row.strike not in added_strikes and not pd.isna(row.Value) and row.Value != 0:
+                                        # Calculate intensity based on value relative to max
+                                        intensity = max(0.6, min(1.0, row.abs_Value / max_val))
                                         
-                                        # Get base color from session state - use call color for positive DEX, put color for negative
-                                        base_color = st.session_state.call_color if row.DEX >= 0 else st.session_state.put_color
+                                        # Determine color based on sign (positive = call color, negative = put color)
+                                        base_color = st.session_state.call_color if row.Value >= 0 else st.session_state.put_color
                                         
                                         # Convert hex to RGB
                                         rgb = tuple(int(base_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
@@ -6282,7 +6122,9 @@ elif st.session_state.current_page == "Dashboard":
                                         # Create color with intensity
                                         color = f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {intensity})'
                                         
-                                        # Add dashed line for DEX levels to distinguish from GEX
+                                        # Line style: Solid for GEX, Dash for others
+                                        dash_style = 'solid' if exposure_type == 'GEX' else 'dash'
+                                        
                                         fig_intraday.add_shape(
                                             type='line',
                                             x0=intraday_data.index[0],
@@ -6292,7 +6134,7 @@ elif st.session_state.current_page == "Dashboard":
                                             line=dict(
                                                 color=color,
                                                 width=2,
-                                                dash='dash'  # Dashed line to distinguish from GEX
+                                                dash=dash_style
                                             ),
                                             xref='x',
                                             yref='y',
@@ -6300,11 +6142,12 @@ elif st.session_state.current_page == "Dashboard":
                                         )
                                         
                                         # Add text annotation positioned to the right of the chart
+                                        label = f"{exposure_type} {format_large_number(row.Value)}"
                                         fig_intraday.add_annotation(
                                             x=0.92,
                                             y=row.strike,
-                                            text=f"DEX {format_large_number(row.DEX)}",
-                                            font=dict(color=color, size=st.session_state.chart_text_size - 2),
+                                            text=label,
+                                            font=dict(color=color, size=st.session_state.chart_text_size),
                                             showarrow=False,
                                             xref="paper",  # Use paper coordinates for x
                                             yref="y",      # Use data coordinates for y
@@ -6312,9 +6155,86 @@ elif st.session_state.current_page == "Dashboard":
                                         )
                                         added_strikes.add(row.strike)
 
-                                # Include DEX strikes in y-axis range
-                                y_min = min(y_min, nearest_3_dex['strike'].min() - padding)
-                                y_max = max(y_max, nearest_3_dex['strike'].max() + padding)
+                                # Include strikes in y-axis range
+                                y_min = min(y_min, levels_to_scale['strike'].min() - padding)
+                                y_max = max(y_max, levels_to_scale['strike'].max() + padding)
+
+                        # Add Straddle if enabled
+                        if st.session_state.show_straddle:
+                            # Find ATM strike
+                            atm_strike = min(calls['strike'], key=lambda x: abs(x - current_price))
+                            
+                            # Get Call and Put prices for ATM strike
+                            atm_call = calls[calls['strike'] == atm_strike]
+                            atm_put = puts[puts['strike'] == atm_strike]
+                            
+                            if not atm_call.empty and not atm_put.empty:
+                                call_price = atm_call.iloc[0]['lastPrice']
+                                put_price = atm_put.iloc[0]['lastPrice']
+                                straddle_price = call_price + put_price
+                                
+                                upper_breakeven = atm_strike + straddle_price
+                                lower_breakeven = atm_strike - straddle_price
+                                
+                                # Add Upper Breakeven Line
+                                fig_intraday.add_shape(
+                                    type='line',
+                                    x0=intraday_data.index[0],
+                                    x1=intraday_data.index[-1],
+                                    y0=upper_breakeven,
+                                    y1=upper_breakeven,
+                                    line=dict(
+                                        color="cyan",
+                                        width=2,
+                                        dash="dash"
+                                    ),
+                                    xref='x',
+                                    yref='y',
+                                    layer='below'
+                                )
+                                
+                                fig_intraday.add_annotation(
+                                    x=0.92,
+                                    y=upper_breakeven,
+                                    text=f"Upper BE {upper_breakeven:.2f}",
+                                    font=dict(color="cyan", size=st.session_state.chart_text_size),
+                                    showarrow=False,
+                                    xref="paper",
+                                    yref="y",
+                                    xanchor="left"
+                                )
+                                
+                                # Add Lower Breakeven Line
+                                fig_intraday.add_shape(
+                                    type='line',
+                                    x0=intraday_data.index[0],
+                                    x1=intraday_data.index[-1],
+                                    y0=lower_breakeven,
+                                    y1=lower_breakeven,
+                                    line=dict(
+                                        color="cyan",
+                                        width=2,
+                                        dash="dash"
+                                    ),
+                                    xref='x',
+                                    yref='y',
+                                    layer='below'
+                                )
+
+                                fig_intraday.add_annotation(
+                                    x=0.92,
+                                    y=lower_breakeven,
+                                    text=f"Lower BE {lower_breakeven:.2f}",
+                                    font=dict(color="cyan", size=st.session_state.chart_text_size),
+                                    showarrow=False,
+                                    xref="paper",
+                                    yref="y",
+                                    xanchor="left"
+                                )
+                                
+                                # Update y-axis range to include straddle levels
+                                y_min = min(y_min, lower_breakeven - padding)
+                                y_max = max(y_max, upper_breakeven + padding)
 
                         # Ensure minimum range
                         if abs(y_max - y_min) < (current_price * 0.01):  # Minimum 1% range
