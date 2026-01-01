@@ -7818,18 +7818,88 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 st.markdown("### 📊 Summary Statistics")
                 col1, col2, col3 = st.columns(3)
                 
+                def format_currency_val(val):
+                    s = format_large_number(val)
+                    if val < 0:
+                        return f"-${s[1:]}"
+                    return f"${s}"
+
                 with col1:
                     total_call = np.sum(call_exposure)
-                    st.metric("Total Call Exposure", f"${format_large_number(total_call)}")
+                    st.markdown(f"""
+                        <div style="padding: 10px; border-radius: 5px; background-color: rgba(255,255,255,0.05);">
+                            <p style="margin: 0; font-size: 0.9em; color: #888;">Total Call Exposure</p>
+                            <p style="margin: 0; font-size: 1.5em; font-weight: bold; color: {call_color};">{format_currency_val(total_call)}</p>
+                        </div>
+                    """, unsafe_allow_html=True)
                 
                 with col2:
                     total_put = np.sum(put_exposure)
-                    st.metric("Total Put Exposure", f"${format_large_number(total_put)}")
+                    st.markdown(f"""
+                        <div style="padding: 10px; border-radius: 5px; background-color: rgba(255,255,255,0.05);">
+                            <p style="margin: 0; font-size: 0.9em; color: #888;">Total Put Exposure</p>
+                            <p style="margin: 0; font-size: 1.5em; font-weight: bold; color: {put_color};">{format_currency_val(total_put)}</p>
+                        </div>
+                    """, unsafe_allow_html=True)
                 
                 with col3:
                     total_net = np.sum(net_exposure)
-                    st.metric("Total Net Exposure", f"${format_large_number(total_net)}")
-            
+                    net_color = call_color if total_net >= 0 else put_color
+                    st.markdown(f"""
+                        <div style="padding: 10px; border-radius: 5px; background-color: rgba(255,255,255,0.05);">
+                            <p style="margin: 0; font-size: 0.9em; color: #888;">Total Net Exposure</p>
+                            <p style="margin: 0; font-size: 1.5em; font-weight: bold; color: {net_color};">{format_currency_val(total_net)}</p>
+                        </div>
+                    """, unsafe_allow_html=True)
+
+                # Analysis Section
+                st.markdown("### 🔍 Cross-Expiration Analysis")
+                
+                # Sum net exposure across all selected dates for each strike
+                net_per_strike = np.sum(net_exposure, axis=1)
+                
+                # Find significant levels
+                if len(net_per_strike) > 0:
+                    # Top Positive Levels
+                    top_pos_indices = np.argsort(net_per_strike)[-5:][::-1]
+                    top_pos_indices = [i for i in top_pos_indices if net_per_strike[i] > 0]
+                    
+                    # Top Negative Levels
+                    top_neg_indices = np.argsort(net_per_strike)[:5]
+                    top_neg_indices = [i for i in top_neg_indices if net_per_strike[i] < 0]
+                    
+                    analysis_col1, analysis_col2 = st.columns(2)
+                    
+                    with analysis_col1:
+                        st.markdown("#### Highest Positive Levels")
+                        if top_pos_indices:
+                            for idx in top_pos_indices:
+                                strike = filtered_strikes[idx]
+                                val = net_per_strike[idx]
+                                st.markdown(f"""
+                                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; background-color: rgba(255,255,255,0.05); border-radius: 4px; margin-bottom: 4px;">
+                                        <span style="font-weight: bold; font-size: 1.1em;">${strike:.2f}</span>
+                                        <span style="color: {call_color}; font-weight: bold; font-size: 1.1em;">{format_currency_val(val)}</span>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            st.write("No significant positive levels.")
+                            
+                    with analysis_col2:
+                        st.markdown("#### Highest Negative Levels")
+                        if top_neg_indices:
+                            for idx in top_neg_indices:
+                                strike = filtered_strikes[idx]
+                                val = net_per_strike[idx]
+                                st.markdown(f"""
+                                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; background-color: rgba(255,255,255,0.05); border-radius: 4px; margin-bottom: 4px;">
+                                        <span style="font-weight: bold; font-size: 1.1em;">${strike:.2f}</span>
+                                        <span style="color: {put_color}; font-weight: bold; font-size: 1.1em;">{format_currency_val(val)}</span>
+                                    </div>
+                                """, unsafe_allow_html=True)
+                        else:
+                            st.write("No significant negative levels.")
+                
             except Exception as e:
                 st.error(f"Error loading data: {str(e)}")
                 import traceback
