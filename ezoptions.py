@@ -1363,22 +1363,31 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
     # Calculate total values for titles using the entire chain
     total_call_oi = calls['openInterest'].sum()
     total_put_oi = puts['openInterest'].sum()
+    total_net_oi = total_call_oi - total_put_oi
+    
     total_call_volume = calls['volume'].sum()
     total_put_volume = puts['volume'].sum()
+    total_net_volume = total_call_volume - total_put_volume
     
     date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
+
+    # Determine colors for net values
+    net_oi_color = call_color if total_net_oi >= 0 else put_color
+    net_volume_color = call_color if total_net_volume >= 0 else put_color
 
     # Create titles with totals using HTML for colored values
     oi_title_with_totals = (
         f"Open Interest by Strike{date_suffix}     "
-        f"<span style='color: {call_color}'>{total_call_oi:,.0f}</span> | "
-        f"<span style='color: {put_color}'>{total_put_oi:,.0f}</span>"
+        f"<span style='color: {call_color}'>{format_large_number(total_call_oi)}</span> | "
+        f"<span style='color: {net_oi_color}'>Net: {format_large_number(total_net_oi)}</span> | "
+        f"<span style='color: {put_color}'>{format_large_number(total_put_oi)}</span>"
     )
     
     volume_title_with_totals = (
         f"Volume by Strike{date_suffix}     "
-        f"<span style='color: {call_color}'>{total_call_volume:,.0f}</span> | "
-        f"<span style='color: {put_color}'>{total_put_volume:,.0f}</span>"
+        f"<span style='color: {call_color}'>{format_large_number(total_call_volume)}</span> | "
+        f"<span style='color: {net_volume_color}'>Net: {format_large_number(total_net_volume)}</span> | "
+        f"<span style='color: {put_color}'>{format_large_number(total_put_volume)}</span>"
     )
     
     # Create Open Interest Chart
@@ -1917,14 +1926,19 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
     # Calculate total values for title using the entire chain
     total_call_volume = calls['volume'].sum()
     total_put_volume = puts['volume'].sum()
+    total_net_volume = total_call_volume - total_put_volume
     
     date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
+
+    # Determine color for net value
+    net_volume_color = call_color if total_net_volume >= 0 else put_color
 
     # Create title with totals using HTML for colored values
     volume_title_with_totals = (
         f"Volume by Strike{date_suffix}     "
-        f"<span style='color: {call_color}'>{total_call_volume:,.0f}</span> | "
-        f"<span style='color: {put_color}'>{total_put_volume:,.0f}</span>"
+        f"<span style='color: {call_color}'>{format_large_number(total_call_volume)}</span> | "
+        f"<span style='color: {net_volume_color}'>Net: {format_large_number(total_net_volume)}</span> | "
+        f"<span style='color: {put_color}'>{format_large_number(total_put_volume)}</span>"
     )
     
     # Create Volume Chart
@@ -4110,17 +4124,26 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     # Calculate total Greek values using the entire chain
     total_call_value = calls[exposure_type].fillna(0).sum()
     total_put_value = puts[exposure_type].fillna(0).sum()
+    
+    if exposure_type in ['GEX', 'GEX_notional']:
+         total_net_value = total_call_value - total_put_value
+    else:
+         total_net_value = total_call_value + total_put_value
 
     # Get the metric being used and add it to the title
     metric_name = st.session_state.get('exposure_metric', 'Open Interest')
     delta_adjusted_label = " (Δ-Adjusted)" if st.session_state.get('delta_adjusted_exposures', False) and exposure_type != 'DEX' else ""
     notional_label = " ($)" if st.session_state.get('calculate_in_notional', True) else ""
     
+    # Determine color for net value
+    net_color = st.session_state.call_color if total_net_value >= 0 else st.session_state.put_color
+
     # Update title to include total Greek values with colored values using HTML and metric info
     title_with_totals = (
         f"{title}{delta_adjusted_label}{notional_label} ({metric_name})     "
-        f"<span style='color: {st.session_state.call_color}'>{total_call_value:,.0f}</span> | "
-        f"<span style='color: {st.session_state.put_color}'>{total_put_value:,.0f}</span>"
+        f"<span style='color: {st.session_state.call_color}'>{format_large_number(total_call_value)}</span> | "
+        f"<span style='color: {net_color}'>Net: {format_large_number(total_net_value)}</span> | "
+        f"<span style='color: {st.session_state.put_color}'>{format_large_number(total_put_value)}</span>"
     )
 
     fig = go.Figure()
@@ -4668,6 +4691,7 @@ def create_davi_chart(calls, puts, S, date_count=1):
     # Calculate totals for title using the entire chain (before filtering by strike range)
     total_call_davi = calls_df['DAVI'].sum()
     total_put_davi = puts_df['DAVI'].sum()
+    total_net_davi = total_call_davi + total_put_davi
 
     # Calculate strike range around current price (percentage-based)
     strike_range = calculate_strike_range(S)
@@ -4687,12 +4711,16 @@ def create_davi_chart(calls, puts, S, date_count=1):
 
     date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
 
+    # Determine color for net value
+    net_davi_color = call_color if total_net_davi >= 0 else put_color
+
     # Create title with totals
     metric_name = metric_type
     title_with_totals = (
         f"Delta-Adjusted Value Index ({metric_name}) by Strike{date_suffix}     "
-        f"<span style='color: {call_color}'>{total_call_davi:,.0f}</span> | "
-        f"<span style='color: {put_color}'>{total_put_davi:,.0f}</span>"
+        f"<span style='color: {call_color}'>{format_large_number(total_call_davi)}</span> | "
+        f"<span style='color: {net_davi_color}'>Net: {format_large_number(total_net_davi)}</span> | "
+        f"<span style='color: {put_color}'>{format_large_number(total_put_davi)}</span>"
     )
 
     fig = go.Figure()
