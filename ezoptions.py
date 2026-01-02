@@ -1286,7 +1286,7 @@ def get_current_price(ticker):
     
     return None
 
-def create_oi_volume_charts(calls, puts, S):
+def create_oi_volume_charts(calls, puts, S, date_count=1):
     if S is None:
         st.error("Could not fetch underlying price.")
         return
@@ -1339,15 +1339,17 @@ def create_oi_volume_charts(calls, puts, S):
     total_call_volume = calls['volume'].sum()
     total_put_volume = puts['volume'].sum()
     
+    date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
+
     # Create titles with totals using HTML for colored values
     oi_title_with_totals = (
-        f"Open Interest by Strike     "
+        f"Open Interest by Strike{date_suffix}     "
         f"<span style='color: {call_color}'>{total_call_oi:,.0f}</span> | "
         f"<span style='color: {put_color}'>{total_put_oi:,.0f}</span>"
     )
     
     volume_title_with_totals = (
-        f"Volume by Strike     "
+        f"Volume by Strike{date_suffix}     "
         f"<span style='color: {call_color}'>{total_call_volume:,.0f}</span> | "
         f"<span style='color: {put_color}'>{total_put_volume:,.0f}</span>"
     )
@@ -1850,7 +1852,7 @@ def create_oi_volume_charts(calls, puts, S):
     
     return fig_oi, fig_volume
 
-def create_volume_by_strike_chart(calls, puts, S):
+def create_volume_by_strike_chart(calls, puts, S, date_count=1):
     """Create a standalone volume by strike chart for the dashboard."""
     if S is None:
         st.error("Could not fetch underlying price.")
@@ -1889,9 +1891,11 @@ def create_volume_by_strike_chart(calls, puts, S):
     total_call_volume = calls['volume'].sum()
     total_put_volume = puts['volume'].sum()
     
+    date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
+
     # Create title with totals using HTML for colored values
     volume_title_with_totals = (
-        f"Volume by Strike     "
+        f"Volume by Strike{date_suffix}     "
         f"<span style='color: {call_color}'>{total_call_volume:,.0f}</span> | "
         f"<span style='color: {put_color}'>{total_put_volume:,.0f}</span>"
     )
@@ -2125,16 +2129,18 @@ def create_volume_by_strike_chart(calls, puts, S):
     
     return fig_volume
 
-def create_donut_chart(call_volume, put_volume):
+def create_donut_chart(call_volume, put_volume, date_count=1):
     labels = ['Calls', 'Puts']
     values = [call_volume, put_volume]
     # Get colors directly from session state at creation time
     call_color = st.session_state.call_color
     put_color = st.session_state.put_color
     
+    date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
+
     fig = go.Figure(data=[go.Pie(labels=labels, values=values, hole=0.3)])
     fig.update_layout(
-        title_text='Call vs Put Volume Ratio',
+        title_text=f'Call vs Put Volume Ratio{date_suffix}',
         title_font_size=st.session_state.chart_text_size + 3,  # Title slightly larger
         showlegend=True,
         legend=dict(
@@ -4217,7 +4223,7 @@ def calculate_max_pain(calls, puts):
     return (max_pain_strike, call_max_pain_strike, put_max_pain_strike, 
             total_pain_by_strike, call_pain_by_strike, put_pain_by_strike)
 
-def create_max_pain_chart(calls, puts, S):
+def create_max_pain_chart(calls, puts, S, date_count=1):
     """Create a chart showing max pain analysis with separate call and put pain."""
     result = calculate_max_pain(calls, puts)
     if result is None:
@@ -4354,9 +4360,11 @@ def create_max_pain_chart(calls, puts, S):
         annotation_position="bottom"
     )
 
+    date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
+
     fig.update_layout(
         title=dict(
-            text='Max Pain',
+            text=f'Max Pain{date_suffix}',
             font=dict(size=st.session_state.chart_text_size + 3)  # Title slightly larger
         ),
         xaxis_title=dict(
@@ -4401,7 +4409,7 @@ def get_nearest_expiry(available_dates):
     
     return min(future_dates).strftime('%Y-%m-%d')
 
-def create_davi_chart(calls, puts, S):
+def create_davi_chart(calls, puts, S, date_count=1):
     """Create Delta-Adjusted Value Index chart that matches other exposure charts style"""
     # Get colors from session state
     call_color = st.session_state.call_color
@@ -4490,10 +4498,12 @@ def create_davi_chart(calls, puts, S):
     if not puts_df.empty:
         net_davi = net_davi.add(puts_df.groupby('strike')['DAVI'].sum(), fill_value=0)
 
+    date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
+
     # Create title with totals
     metric_name = metric_type
     title_with_totals = (
-        f"Delta-Adjusted Value Index ({metric_name}) by Strike     "
+        f"Delta-Adjusted Value Index ({metric_name}) by Strike{date_suffix}     "
         f"<span style='color: {call_color}'>{total_call_davi:,.0f}</span> | "
         f"<span style='color: {put_color}'>{total_put_davi:,.0f}</span>"
     )
@@ -4788,7 +4798,7 @@ if st.session_state.current_page == "OI & Volume":
                 
                 with tab1:
                     # Original OI and Volume charts
-                    oi_fig, volume_fig = create_oi_volume_charts(all_calls, all_puts, S)
+                    oi_fig, volume_fig = create_oi_volume_charts(all_calls, all_puts, S, len(selected_expiry_dates))
                     st.plotly_chart(oi_fig, width='stretch')
                     st.plotly_chart(volume_fig, width='stretch')
                 
@@ -6357,8 +6367,8 @@ elif st.session_state.current_page == "Dashboard":
                     # Volume ratio and other charts
                     call_volume = calls['volume'].sum()
                     put_volume = puts['volume'].sum()
-                    fig_volume_ratio = create_donut_chart(call_volume, put_volume)
-                    fig_max_pain = create_max_pain_chart(calls, puts, S)
+                    fig_volume_ratio = create_donut_chart(call_volume, put_volume, len(selected_expiry_dates))
+                    fig_max_pain = create_max_pain_chart(calls, puts, S, len(selected_expiry_dates))
                     
                     chart_options = [
                         "Intraday Price", "Gamma Exposure", "Vanna Exposure", "Delta Exposure",
@@ -6496,9 +6506,9 @@ elif st.session_state.current_page == "Dashboard":
                         ("Gamma Exposure", fig_gamma), ("Delta Exposure", fig_delta),
                         ("Vanna Exposure", fig_vanna), ("Charm Exposure", fig_charm),
                         ("Speed Exposure", fig_speed), ("Vomma Exposure", fig_vomma),
-                        ("Volume Ratio", fig_volume_ratio), ("Max Pain", fig_max_pain),
-                        ("Delta-Adjusted Value Index", create_davi_chart(calls, puts, S)),
-                        ("Volume by Strike", create_volume_by_strike_chart(calls, puts, S))
+                        ("Volume Ratio", fig_volume_ratio), ("Max Pain", create_max_pain_chart(calls, puts, S, len(selected_expiry_dates))),
+                        ("Delta-Adjusted Value Index", create_davi_chart(calls, puts, S, len(selected_expiry_dates))),
+                        ("Volume by Strike", create_volume_by_strike_chart(calls, puts, S, len(selected_expiry_dates)))
                     ]:
                         if chart in selected_charts:
                             supplemental_charts.append(fig)
@@ -6568,7 +6578,7 @@ elif st.session_state.current_page == "Max Pain":
                     st.markdown(f"### Distance to Max Pain: ${abs(S - max_pain_strike):.2f}")
                     
                     # Create and display the max pain chart
-                    fig = create_max_pain_chart(all_calls, all_puts, S)
+                    fig = create_max_pain_chart(all_calls, all_puts, S, len(selected_expiry_dates))
                     if fig is not None:
                         st.plotly_chart(fig, width='stretch')
                 else:
