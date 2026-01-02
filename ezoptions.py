@@ -18,6 +18,7 @@ import pytz
 from datetime import timedelta
 import requests
 import json
+from io import StringIO
 
 
 def calculate_heikin_ashi(df):
@@ -529,17 +530,49 @@ def add_current_price_line(fig, current_price):
         )
     return fig
 
-@st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
-def get_screener_data(screener_type):
-    """Fetch screener data from Yahoo Finance"""
+@st.cache_data(ttl=86400, show_spinner=False)  # Cache for 24 hours
+def get_sp500_tickers():
+    """Fetch S&P 500 tickers from Wikipedia"""
     try:
-        response = yf.screen(screener_type)
+        url = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Connection': 'keep-alive',
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        tables = pd.read_html(StringIO(response.text))
+        sp500_table = tables[0]
+        # The ticker column is usually 'Symbol'
+        tickers = sp500_table['Symbol'].str.replace('.', '-', regex=False).tolist()
+        print(f"Successfully fetched {len(tickers)} S&P 500 tickers")
+        return set(tickers)
+    except Exception as e:
+        print(f"Error fetching S&P 500 tickers: {e}")
+        # Return a fallback empty set if fetch fails
+        return set()
+
+def get_screener_data(screener_type, filter_sp500=False):
+    """Fetch screener data from Yahoo Finance, optionally filtering for S&P 500 stocks only"""
+    try:
+        # Request more results when filtering for S&P 500 to ensure we get enough matches
+        count = 250 if filter_sp500 else 25
+        response = yf.screen(screener_type, count=count)
         if isinstance(response, dict) and 'quotes' in response:
+            # Get S&P 500 tickers if filtering is enabled
+            sp500_tickers = get_sp500_tickers() if filter_sp500 else None
+            
             data = []
             for quote in response['quotes']:
+                symbol = quote.get('symbol', '')
+                # Skip if filtering for S&P 500 and symbol not in list
+                if filter_sp500 and sp500_tickers and symbol not in sp500_tickers:
+                    continue
                 # Extract relevant information
                 info = {
-                    'symbol': quote.get('symbol', ''),
+                    'symbol': symbol,
                     'shortName': quote.get('shortName', ''),
                     'regularMarketPrice': quote.get('regularMarketPrice', 0),
                     'regularMarketChangePercent': quote.get('regularMarketChangePercent', 0),
@@ -1274,18 +1307,26 @@ def create_oi_volume_charts(calls, puts, S):
     # Create separate dataframes for OI and Volume, filtering out zeros
     calls_oi_df = calls_filtered[['strike', 'openInterest']].copy().fillna(0)
     calls_oi_df = calls_oi_df[calls_oi_df['openInterest'] > 0]  # Changed from != 0 to > 0
+    # Aggregate by strike to handle multiple expirations
+    calls_oi_df = calls_oi_df.groupby('strike', as_index=False)['openInterest'].sum()
     calls_oi_df['OptionType'] = 'Call'
     
     puts_oi_df = puts_filtered[['strike', 'openInterest']].copy().fillna(0)
     puts_oi_df = puts_oi_df[puts_oi_df['openInterest'] > 0]  # Changed from != 0 to > 0
+    # Aggregate by strike to handle multiple expirations
+    puts_oi_df = puts_oi_df.groupby('strike', as_index=False)['openInterest'].sum()
     puts_oi_df['OptionType'] = 'Put'
     
     calls_vol_df = calls_filtered[['strike', 'volume']].copy().fillna(0)
     calls_vol_df = calls_vol_df[calls_vol_df['volume'] > 0]  # Changed from != 0 to > 0
+    # Aggregate by strike to handle multiple expirations
+    calls_vol_df = calls_vol_df.groupby('strike', as_index=False)['volume'].sum()
     calls_vol_df['OptionType'] = 'Call'
     
     puts_vol_df = puts_filtered[['strike', 'volume']].copy().fillna(0)
     puts_vol_df = puts_vol_df[puts_vol_df['volume'] > 0]  # Changed from != 0 to > 0
+    # Aggregate by strike to handle multiple expirations
+    puts_vol_df = puts_vol_df.groupby('strike', as_index=False)['volume'].sum()
     puts_vol_df['OptionType'] = 'Put'
     
     # Calculate Net Open Interest and Net Volume using filtered data
@@ -1831,10 +1872,14 @@ def create_volume_by_strike_chart(calls, puts, S):
     # Create separate dataframes for Volume, filtering out zeros
     calls_vol_df = calls_filtered[['strike', 'volume']].copy().fillna(0)
     calls_vol_df = calls_vol_df[calls_vol_df['volume'] > 0]
+    # Aggregate by strike to handle multiple expirations
+    calls_vol_df = calls_vol_df.groupby('strike', as_index=False)['volume'].sum()
     calls_vol_df['OptionType'] = 'Call'
     
     puts_vol_df = puts_filtered[['strike', 'volume']].copy().fillna(0)
     puts_vol_df = puts_vol_df[puts_vol_df['volume'] > 0]
+    # Aggregate by strike to handle multiple expirations
+    puts_vol_df = puts_vol_df.groupby('strike', as_index=False)['volume'].sum()
     puts_vol_df['OptionType'] = 'Put'
     
     # Calculate Net Volume using filtered data
@@ -2915,6 +2960,12 @@ def expiry_selector_fragment(page_name, available_dates):
             # Filter global selection to only include available dates
             default_selection = [d for d in st.session_state.global_selected_expiries if d in available_dates]
             
+            # Default to nearest expiry if nothing is selected
+            if not default_selection:
+                nearest = get_nearest_expiry(available_dates)
+                if nearest:
+                    default_selection = [nearest]
+
             selected = st.multiselect(
                 "Select Expiration Date(s):",
                 options=available_dates,
@@ -3824,10 +3875,14 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     # Filter out zero values
     calls_df = calls[['strike', exposure_type]].copy().fillna(0)
     calls_df = calls_df[calls_df[exposure_type] != 0]
+    # Aggregate by strike to handle multiple expirations
+    calls_df = calls_df.groupby('strike', as_index=False)[exposure_type].sum()
     calls_df['OptionType'] = 'Call'
 
     puts_df = puts[['strike', exposure_type]].copy().fillna(0)
     puts_df = puts_df[puts_df[exposure_type] != 0]
+    # Aggregate by strike to handle multiple expirations
+    puts_df = puts_df.groupby('strike', as_index=False)[exposure_type].sum()
     puts_df['OptionType'] = 'Put'
 
     # Calculate strike range around current price (percentage-based)
@@ -4405,10 +4460,14 @@ def create_davi_chart(calls, puts, S):
     # Only keep non-zero values
     calls_df['DAVI'] = calls_metric * 100 * calls_df['lastPrice'].fillna(0) * calls_df['calc_delta'].fillna(0)
     calls_df = calls_df[calls_df['DAVI'] != 0][['strike', 'DAVI']].copy()
+    # Aggregate by strike to handle multiple expirations
+    calls_df = calls_df.groupby('strike', as_index=False)['DAVI'].sum()
     calls_df['OptionType'] = 'Call'
 
     puts_df['DAVI'] = puts_metric * 100 * puts_df['lastPrice'].fillna(0) * puts_df['calc_delta'].fillna(0)
     puts_df = puts_df[puts_df['DAVI'] != 0][['strike', 'DAVI']].copy()
+    # Aggregate by strike to handle multiple expirations
+    puts_df = puts_df.groupby('strike', as_index=False)['DAVI'].sum()
     puts_df['OptionType'] = 'Put'
 
     # Calculate totals for title using the entire chain (before filtering by strike range)
@@ -5881,26 +5940,39 @@ elif st.session_state.current_page == "Dashboard":
             if not available_dates:
                 st.warning("No options data available for this ticker.")
             else:
-                # Get nearest expiry and use it as default
-                nearest_expiry = get_nearest_expiry(available_dates)
-                expiry_date_str = st.selectbox(
-                    "Select an Exp. Date:", 
-                    options=available_dates,
-                    index=available_dates.index(nearest_expiry) if nearest_expiry else None,
-                    key="dashboard_expiry_main"
+                selected_expiry_dates, selector_container = expiry_selector_fragment("Dashboard", available_dates)
+                st.session_state.expiry_selector_container = selector_container
+                
+                if not selected_expiry_dates:
+                    st.warning("Please select at least one expiration date.")
+                    st.stop()
+
+                def process_dashboard_date(t, d):
+                    res = compute_greeks_and_charts(t, d, "dashboard", S)
+                    if res[0] is None:
+                        return None
+                    return res[:2]
+
+                calls, puts = fetch_and_process_multiple_dates(
+                    ticker, 
+                    selected_expiry_dates,
+                    process_dashboard_date
                 )
                 
-                if expiry_date_str:  # Only proceed if expiry date is selected
-                    calls, puts, _, t, selected_expiry, today = compute_greeks_and_charts(ticker, expiry_date_str, "dashboard", S)
-                    if calls is None or puts is None:
-                        st.stop()
-                        
-                    fig_gamma = create_exposure_bar_chart(calls, puts, "GEX", "Gamma Exposure by Strike", S)
-                    fig_vanna = create_exposure_bar_chart(calls, puts, "VEX", "Vanna Exposure by Strike", S)
-                    fig_delta = create_exposure_bar_chart(calls, puts, "DEX", "Delta Exposure by Strike", S)
-                    fig_charm = create_exposure_bar_chart(calls, puts, "Charm", "Charm Exposure by Strike", S)
-                    fig_speed = create_exposure_bar_chart(calls, puts, "Speed", "Speed Exposure by Strike", S)
-                    fig_vomma = create_exposure_bar_chart(calls, puts, "Vomma", "Vomma Exposure by Strike", S)
+                if calls.empty and puts.empty:
+                    st.warning("No options data available for the selected dates.")
+                    st.stop()
+
+                if True: # Maintain indentation
+                    
+                    date_suffix = f" ({len(selected_expiry_dates)} dates)" if len(selected_expiry_dates) > 1 else ""
+                    
+                    fig_gamma = create_exposure_bar_chart(calls, puts, "GEX", f"Gamma Exposure by Strike{date_suffix}", S)
+                    fig_vanna = create_exposure_bar_chart(calls, puts, "VEX", f"Vanna Exposure by Strike{date_suffix}", S)
+                    fig_delta = create_exposure_bar_chart(calls, puts, "DEX", f"Delta Exposure by Strike{date_suffix}", S)
+                    fig_charm = create_exposure_bar_chart(calls, puts, "Charm", f"Charm Exposure by Strike{date_suffix}", S)
+                    fig_speed = create_exposure_bar_chart(calls, puts, "Speed", f"Speed Exposure by Strike{date_suffix}", S)
+                    fig_vomma = create_exposure_bar_chart(calls, puts, "Vomma", f"Vomma Exposure by Strike{date_suffix}", S)
                     
                     # Intraday price chart
                     intraday_data, current_price, vix_data = get_combined_intraday_data(ticker)
@@ -6301,17 +6373,21 @@ elif st.session_state.current_page == "Dashboard":
                     if 'saved_ticker' in st.session_state and st.session_state.saved_ticker:
                         current_price = get_current_price(st.session_state.saved_ticker)
                         if current_price:
-                            gainers_df = get_screener_data("day_gainers")
-                            losers_df = get_screener_data("day_losers")
+                            # Filter for S&P 500 stocks only
+                            gainers_df = get_screener_data("day_gainers", filter_sp500=True)
+                            losers_df = get_screener_data("day_losers", filter_sp500=True)
                             
                             if not gainers_df.empty and not losers_df.empty:
+                                # Get top 5 gainers and losers
+                                top_gainers = gainers_df.head(5)
+                                top_losers = losers_df.head(5)
                                 market_text = (
-                                    "<span style='color: gray; font-size: 14px;'>Gainers:</span> " +
+                                    "<span style='color: gray; font-size: 14px;'>S&P 500 Gainers:</span> " +
                                     " ".join([f"<span style='color: {st.session_state.call_color}'>{gainer['symbol']}: +{gainer['regularMarketChangePercent']:.1f}%</span> "
-                                            for _, gainer in gainers_df.head().iterrows()]) +
-                                    " | <span style='color: gray; font-size: 14px;'>Losers:</span> " +
+                                            for _, gainer in top_gainers.iterrows()]) +
+                                    " | <span style='color: gray; font-size: 14px;'>S&P 500 Losers:</span> " +
                                     " ".join([f"<span style='color: {st.session_state.put_color}'>{loser['symbol']}: {loser['regularMarketChangePercent']:.1f}%</span> "
-                                            for _, loser in losers_df.head().iterrows()])
+                                            for _, loser in top_losers.iterrows()])
                                 )
                                 st.markdown(market_text, unsafe_allow_html=True)
                             
@@ -6348,29 +6424,25 @@ elif st.session_state.current_page == "Dashboard":
                                 options_volume_text = ""
                                 
                                 try:
-                                    stock = yf.Ticker(st.session_state.saved_ticker)
-                                    if hasattr(stock, 'options') and stock.options:
-                                        # Get nearest expiry
-                                        nearest_expiry = get_nearest_expiry(stock.options)
-                                        if nearest_expiry:
-                                            calls, puts = fetch_options_for_date(st.session_state.saved_ticker, nearest_expiry, current_price)
-                                            call_volume = calls['volume'].sum()
-                                            put_volume = puts['volume'].sum()
-                                            call_oi = calls['openInterest'].sum()
-                                            put_oi = puts['openInterest'].sum()
-                                            
-                                            if put_volume > 0:
-                                                cp_volume_ratio = call_volume / put_volume
-                                                cp_ratio_color = st.session_state.call_color if cp_volume_ratio > 1 else st.session_state.put_color
-                                                options_volume_text = f"<span style='color: gray;'>Call Vol:</span> <span style='color: {st.session_state.call_color}'>{call_volume:,}</span> | <span style='color: gray;'>Put Vol:</span> <span style='color: {st.session_state.put_color}'>{put_volume:,}</span>"
-                                                call_put_ratio_text = f" | <span style='color: gray;'>C/P Ratio:</span> <span style='color: {cp_ratio_color}'>{cp_volume_ratio:.2f}</span>"
-                                            
-                                            if put_oi > 0:
-                                                cp_oi_ratio = call_oi / put_oi
-                                                oi_ratio_color = st.session_state.call_color if cp_oi_ratio > 1 else st.session_state.put_color
-                                                call_put_ratio_text += f" | <span style='color: gray;'>OI Ratio:</span> <span style='color: {oi_ratio_color}'>{cp_oi_ratio:.2f}</span>"
+                                    # Use the already fetched calls and puts dataframes which respect multi-expiry selection
+                                    if not calls.empty or not puts.empty:
+                                        call_volume = calls['volume'].sum()
+                                        put_volume = puts['volume'].sum()
+                                        call_oi = calls['openInterest'].sum()
+                                        put_oi = puts['openInterest'].sum()
+                                        
+                                        if put_volume > 0:
+                                            cp_volume_ratio = call_volume / put_volume
+                                            cp_ratio_color = st.session_state.call_color if cp_volume_ratio > 1 else st.session_state.put_color
+                                            options_volume_text = f"<span style='color: gray;'>Call Vol:</span> <span style='color: {st.session_state.call_color}'>{call_volume:,.0f}</span> | <span style='color: gray;'>Put Vol:</span> <span style='color: {st.session_state.put_color}'>{put_volume:,.0f}</span>"
+                                            call_put_ratio_text = f" | <span style='color: gray;'>C/P Ratio:</span> <span style='color: {cp_ratio_color}'>{cp_volume_ratio:.2f}</span>"
+                                        
+                                        if put_oi > 0:
+                                            cp_oi_ratio = call_oi / put_oi
+                                            oi_ratio_color = st.session_state.call_color if cp_oi_ratio > 1 else st.session_state.put_color
+                                            call_put_ratio_text += f" | <span style='color: gray;'>OI Ratio:</span> <span style='color: {oi_ratio_color}'>{cp_oi_ratio:.2f}</span>"
                                 except Exception as e:
-                                    print(f"Error fetching options data: {e}")
+                                    print(f"Error calculating options stats: {e}")
 
                                 # Create market data display
                                 price_color = st.session_state.call_color if change >= 0 else st.session_state.put_color
@@ -6437,9 +6509,7 @@ elif st.session_state.current_page == "Dashboard":
                             if chart is not None:
                                 cols[j].plotly_chart(chart, width='stretch')
 
-                else:
-                    st.warning("Please select an expiration date to view the dashboard.")
-                    st.stop()
+
 
 elif st.session_state.current_page == "Max Pain":
     with main_placeholder.container():
