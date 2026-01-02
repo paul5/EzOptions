@@ -11,6 +11,7 @@ import re
 import time
 from scipy.stats import norm
 import threading
+import concurrent.futures
 from contextlib import contextmanager
 from scipy.interpolate import griddata
 import numpy as np
@@ -19,6 +20,14 @@ from datetime import timedelta
 import requests
 import json
 from io import StringIO
+try:
+    from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
+except ImportError:
+    try:
+        from streamlit.scriptrunner import add_script_run_ctx, get_script_run_ctx  # type: ignore
+    except ImportError:
+        add_script_run_ctx = None
+        get_script_run_ctx = None
 
 
 def calculate_heikin_ashi(df):
@@ -1194,7 +1203,7 @@ def create_premium_heatmap(calls_df, puts_df, filtered_strikes, selected_expiry_
 # -------------------------------
 def fetch_all_options(ticker):
     """
-    Fetches option chains for all available expirations for the given ticker.
+    Fetches option chains for all available expirations for the given ticker in parallel.
     Returns two DataFrames: one for calls and one for puts, with an added column 'extracted_expiry'.
     """
     print(f"Fetching avaiable expirations for {ticker}")  # Add print statement
@@ -1206,41 +1215,59 @@ def fetch_all_options(ticker):
         # Get current market date
         current_market_date = get_now_et().date()
         
+        # Filter for valid future expirations first
+        valid_expirations = []
         for exp in stock.options:
             try:
-                chain = stock.option_chain(exp)
-                calls = chain.calls
-                puts = chain.puts
-                
-                # Only process options that haven't expired
                 exp_date = datetime.strptime(exp, '%Y-%m-%d').date()
                 if exp_date >= current_market_date:
-                    if not calls.empty:
-                        calls = calls.copy()
-                        calls['extracted_expiry'] = calls['contractSymbol'].apply(extract_expiry_from_contract)
-                        all_calls.append(calls)
-                    if not puts.empty:
-                        puts = puts.copy()
-                        puts['extracted_expiry'] = puts['contractSymbol'].apply(extract_expiry_from_contract)
-                        all_puts.append(puts)
+                    valid_expirations.append(exp)
+            except ValueError:
+                continue
+
+        # Capture context for threads
+        ctx = get_script_run_ctx() if get_script_run_ctx else None
+
+        def fetch_single_expiry(exp):
+            if add_script_run_ctx and ctx:
+                add_script_run_ctx(threading.current_thread(), ctx)
+            try:
+                # Use fetch_options_for_date to leverage its caching
+                calls, puts = fetch_options_for_date(ticker, exp)
+                return calls, puts
             except Exception as e:
                 st.error(f"Error fetching chain for expiry {exp}: {e}")
-                continue
+                return None
+
+        # Use ThreadPoolExecutor for parallel fetching
+        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_exp = {}
+            for exp in valid_expirations:
+                future = executor.submit(fetch_single_expiry, exp)
+                future_to_exp[future] = exp
+            
+            for future in concurrent.futures.as_completed(future_to_exp):
+                exp = future_to_exp[future]
+                try:
+                    result = future.result()
+                    if result:
+                        calls, puts = result
+                        if not calls.empty:
+                            all_calls.append(calls)
+                        if not puts.empty:
+                            all_puts.append(puts)
+                except Exception as e:
+                    print(f"Exception fetching expiry {exp}: {e}")
+
     else:
         try:
             # Get next valid expiration
             next_exp = stock.options[0] if stock.options else None
             if next_exp:
-                chain = stock.option_chain(next_exp)
-                calls = chain.calls
-                puts = chain.puts
+                calls, puts = fetch_options_for_date(ticker, next_exp)
                 if not calls.empty:
-                    calls = calls.copy()
-                    calls['extracted_expiry'] = calls['contractSymbol'].apply(extract_expiry_from_contract)
                     all_calls.append(calls)
                 if not puts.empty:
-                    puts = puts.copy()
-                    puts['extracted_expiry'] = puts['contractSymbol'].apply(extract_expiry_from_contract)
                     all_puts.append(puts)
         except Exception as e:
             st.error(f"Error fetching fallback options data: {e}")
@@ -2179,96 +2206,147 @@ def get_risk_free_rate():
 if 'risk_free_rate' not in st.session_state:
     st.session_state.risk_free_rate = get_risk_free_rate()
 
-def calculate_greeks(flag, S, K, t, sigma):
+def calculate_bs_price(flag, S, K, t, r, sigma, q=0):
+    """Calculate Black-Scholes option price with dividends."""
+    try:
+        d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * t) / (sigma * np.sqrt(t))
+        d2 = d1 - sigma * np.sqrt(t)
+        
+        if flag == 'c':
+            price = S * np.exp(-q * t) * norm.cdf(d1) - K * np.exp(-r * t) * norm.cdf(d2)
+        else:
+            price = K * np.exp(-r * t) * norm.cdf(-d2) - S * np.exp(-q * t) * norm.cdf(-d1)
+        return price
+    except:
+        return 0.0
+
+def calculate_bs_vega(S, K, t, r, sigma, q=0):
+    """Calculate Black-Scholes Vega with dividends."""
+    try:
+        d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * t) / (sigma * np.sqrt(t))
+        return S * np.exp(-q * t) * norm.pdf(d1) * np.sqrt(t)
+    except:
+        return 0.0
+
+def calculate_implied_volatility(price, S, K, t, r, flag, q=0):
+    """Calculate Implied Volatility using Newton-Raphson method."""
+    sigma = 0.5  # Initial guess
+    for i in range(100):
+        bs_price = calculate_bs_price(flag, S, K, t, r, sigma, q)
+        diff = price - bs_price
+        
+        if abs(diff) < 1e-5:
+            return sigma
+            
+        vega = calculate_bs_vega(S, K, t, r, sigma, q)
+        if abs(vega) < 1e-8:
+            return None
+            
+        sigma = sigma + diff / vega
+        
+        if sigma <= 0:
+            sigma = 0.001 # Reset if negative
+        if sigma > 5:
+            sigma = 5.0 # Cap if too high
+            
+    return None
+
+def calculate_greeks(flag, S, K, t, sigma, r=None, q=0):
     """
-    Calculate delta, gamma and vanna for an option using Black-Scholes model.
+    Calculate delta, gamma and vanna for an option using Black-Scholes model with dividends.
     t: time to expiration in years.
     flag: 'c' for call, 'p' for put.
     """
     try:
         # Add a small offset to prevent division by zero
-        t = max(t, 1/1440)  # Minimum 1 minute expressed in years
-        r = st.session_state.risk_free_rate  # Use cached rate from session state
+        t = max(t, 1e-5)  # Minimum ~5 minutes expressed in years
+        if r is None:
+            r = st.session_state.risk_free_rate  # Use cached rate from session state
         
-        d1 = (log(S / K) + (r + 0.5 * sigma**2) * t) / (sigma * sqrt(t))
-        d2 = d1 - sigma * sqrt(t)
+        d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * t) / (sigma * np.sqrt(t))
+        d2 = d1 - sigma * np.sqrt(t)
         
         # Calculate delta
         if flag == 'c':
-            delta_val = norm.cdf(d1)
+            delta_val = np.exp(-q * t) * norm.cdf(d1)
         else:  # put
-            delta_val = norm.cdf(d1) - 1
+            delta_val = np.exp(-q * t) * (norm.cdf(d1) - 1)
         
         # Calculate gamma
-        gamma_val = norm.pdf(d1) / (S * sigma * sqrt(t))
+        gamma_val = np.exp(-q * t) * norm.pdf(d1) / (S * sigma * np.sqrt(t))
         
         # Calculate vega
-        vega_val = S * norm.pdf(d1) * sqrt(t)
+        vega_val = S * np.exp(-q * t) * norm.pdf(d1) * np.sqrt(t)
         
         # Calculate vanna
-        vanna_val = -norm.pdf(d1) * d2 / sigma
+        vanna_val = -np.exp(-q * t) * norm.pdf(d1) * d2 / sigma
         
         return delta_val, gamma_val, vanna_val
     except Exception as e:
         st.error(f"Error calculating greeks: {e}")
         return None, None, None
 
-def calculate_charm(flag, S, K, t, sigma):
+def calculate_charm(flag, S, K, t, sigma, r=None, q=0):
     """
-    Calculate charm (dDelta/dTime) for an option.
+    Calculate charm (dDelta/dTime) for an option with dividends.
     """
     try:
-        t = max(t, 1/1440)
-        r = st.session_state.risk_free_rate  # Use cached rate from session state
+        t = max(t, 1e-5)
+        if r is None:
+            r = st.session_state.risk_free_rate  # Use cached rate from session state
         
-        d1 = (log(S / K) + (r + 0.5 * sigma**2) * t) / (sigma * sqrt(t))
-        d2 = d1 - sigma * sqrt(t)
+        d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * t) / (sigma * np.sqrt(t))
+        d2 = d1 - sigma * np.sqrt(t)
         
         norm_d1 = norm.pdf(d1)
         
-        # Charm is the same for calls and puts when q=0 (no dividends)
-        charm = -norm_d1 * (2*r*t - d2*sigma*sqrt(t)) / (2*t*sigma*sqrt(t))
+        if flag == 'c':
+            charm = -np.exp(-q * t) * (norm_d1 * (2*(r-q)*t - d2*sigma*np.sqrt(t)) / (2*t*sigma*np.sqrt(t)) - q * norm.cdf(d1))
+        else:
+            charm = -np.exp(-q * t) * (norm_d1 * (2*(r-q)*t - d2*sigma*np.sqrt(t)) / (2*t*sigma*np.sqrt(t)) + q * norm.cdf(-d1))
         
         return charm
     except Exception as e:
         st.error(f"Error calculating charm: {e}")
         return None
 
-def calculate_speed(flag, S, K, t, sigma):
+def calculate_speed(flag, S, K, t, sigma, r=None, q=0):
     """
-    Calculate speed (dGamma/dSpot) for an option.
+    Calculate speed (dGamma/dSpot) for an option with dividends.
     """
     try:
-        t = max(t, 1/1440)
-        r = st.session_state.risk_free_rate  # Use cached rate from session state
+        t = max(t, 1e-5)
+        if r is None:
+            r = st.session_state.risk_free_rate  # Use cached rate from session state
         
-        d1 = (log(S / K) + (r + 0.5 * sigma**2) * t) / (sigma * sqrt(t))
-        d2 = d1 - sigma * sqrt(t)
+        d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * t) / (sigma * np.sqrt(t))
+        d2 = d1 - sigma * np.sqrt(t)
         
         # Calculate gamma manually
-        gamma = norm.pdf(d1) / (S * sigma * sqrt(t))
+        gamma = np.exp(-q * t) * norm.pdf(d1) / (S * sigma * np.sqrt(t))
         
         # Calculate speed
-        speed = -gamma * (d1/(sigma * sqrt(t)) + 1) / S
+        speed = -gamma * (d1/(sigma * np.sqrt(t)) + 1) / S
         
         return speed
     except Exception as e:
         st.error(f"Error calculating speed: {e}")
         return None
 
-def calculate_vomma(flag, S, K, t, sigma):
+def calculate_vomma(flag, S, K, t, sigma, r=None, q=0):
     """
-    Calculate vomma (dVega/dVol) for an option.
+    Calculate vomma (dVega/dVol) for an option with dividends.
     """
     try:
-        t = max(t, 1/1440)
-        r = st.session_state.risk_free_rate  # Use cached rate from session state
+        t = max(t, 1e-5)
+        if r is None:
+            r = st.session_state.risk_free_rate  # Use cached rate from session state
         
-        d1 = (log(S / K) + (r + 0.5 * sigma**2) * t) / (sigma * sqrt(t))
-        d2 = d1 - sigma * sqrt(t)
+        d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * t) / (sigma * np.sqrt(t))
+        d2 = d1 - sigma * np.sqrt(t)
         
         # Calculate vega manually
-        vega = S * norm.pdf(d1) * sqrt(t)
+        vega = S * np.exp(-q * t) * norm.pdf(d1) * np.sqrt(t)
         
         # Calculate vomma
         vomma = vega * (d1 * d2) / sigma
@@ -2290,8 +2368,20 @@ def calculate_implied_move(S, calls_df, puts_df):
         atm_put = puts_df[puts_df['strike'] == atm_strike]
         
         if not atm_call.empty and not atm_put.empty:
-            call_price = atm_call['lastPrice'].iloc[0] if 'lastPrice' in atm_call.columns else atm_call['ask'].iloc[0]
-            put_price = atm_put['lastPrice'].iloc[0] if 'lastPrice' in atm_put.columns else atm_put['ask'].iloc[0]
+            # Use Mid Price for better accuracy
+            call_bid = atm_call['bid'].iloc[0]
+            call_ask = atm_call['ask'].iloc[0]
+            if call_bid > 0 and call_ask > 0:
+                call_price = (call_bid + call_ask) / 2
+            else:
+                call_price = atm_call['lastPrice'].iloc[0] if 'lastPrice' in atm_call.columns else atm_call['ask'].iloc[0]
+
+            put_bid = atm_put['bid'].iloc[0]
+            put_ask = atm_put['ask'].iloc[0]
+            if put_bid > 0 and put_ask > 0:
+                put_price = (put_bid + put_ask) / 2
+            else:
+                put_price = atm_put['lastPrice'].iloc[0] if 'lastPrice' in atm_put.columns else atm_put['ask'].iloc[0]
             
             straddle_price = call_price + put_price
             implied_move_pct = (straddle_price / S) * 100
@@ -2310,11 +2400,11 @@ def calculate_implied_move(S, calls_df, puts_df):
     
     return None
 
-def find_probability_strikes(calls_df, puts_df, S, expiry_date, target_prob=0.5):
+def find_probability_strikes(calls_df, puts_df, S, expiry_date, target_prob=0.5, q=0):
     """Find strikes where there's exactly target_prob chance of being above/below at expiration."""
     try:
         # Calculate probability distribution first
-        prob_df = calculate_probability_distribution(calls_df, puts_df, S, expiry_date)
+        prob_df = calculate_probability_distribution(calls_df, puts_df, S, expiry_date, q)
         
         if prob_df.empty:
             return None
@@ -2391,7 +2481,7 @@ def find_delta_strikes(calls_df, puts_df, target_delta=0.5):
         print(f"Error finding delta strikes: {e}")
         return None
 
-def calculate_probability_distribution(calls_df, puts_df, S, expiry_date):
+def calculate_probability_distribution(calls_df, puts_df, S, expiry_date, q=0):
     """Calculate probability distribution from option prices using risk-neutral probabilities."""
     try:
         # Get all strikes and sort them
@@ -2414,17 +2504,35 @@ def calculate_probability_distribution(calls_df, puts_df, S, expiry_date):
             call_data = calls_df[calls_df['strike'] == strike]
             put_data = puts_df[puts_df['strike'] == strike]
             
-            # Prefer using implied volatility to calculate risk-neutral probabilities
+            # Calculate IV manually using Mid Price
             iv = None
-            if not call_data.empty and 'impliedVolatility' in call_data.columns:
-                iv = call_data['impliedVolatility'].iloc[0]
-            elif not put_data.empty and 'impliedVolatility' in put_data.columns:
-                iv = put_data['impliedVolatility'].iloc[0]
+            try:
+                # Use Call data if available, else Put
+                if not call_data.empty:
+                    row = call_data.iloc[0]
+                    flag = 'c'
+                elif not put_data.empty:
+                    row = put_data.iloc[0]
+                    flag = 'p'
+                else:
+                    continue
+
+                bid = row.get('bid', 0)
+                ask = row.get('ask', 0)
+                if bid > 0 and ask > 0:
+                    price = (bid + ask) / 2
+                else:
+                    price = row.get('lastPrice', 0)
+                
+                if price > 0:
+                    iv = calculate_implied_volatility(price, S, strike, t, r, flag, q)
+            except:
+                pass
             
-            if iv and iv > 0:
+            if iv and iv > 0 and iv <= 5.0:
                 # Calculate risk-neutral probability using Black-Scholes
                 try:
-                    d1 = (log(S / strike) + (r + 0.5 * iv**2) * t) / (iv * sqrt(t))
+                    d1 = (log(S / strike) + (r - q + 0.5 * iv**2) * t) / (iv * sqrt(t))
                     d2 = d1 - iv * sqrt(t)
                     
                     # Risk-neutral probability of finishing above strike
@@ -2643,7 +2751,7 @@ def is_valid_trading_day(expiry_date, current_date):
 
 def fetch_and_process_multiple_dates(ticker, expiry_dates, process_func):
     """
-    Fetches and processes data for multiple expiration dates.
+    Fetches and processes data for multiple expiration dates in parallel.
     
     Args:
         ticker: Stock ticker symbol
@@ -2656,16 +2764,44 @@ def fetch_and_process_multiple_dates(ticker, expiry_dates, process_func):
     all_calls = []
     all_puts = []
     
-    for date in expiry_dates:
-        result = process_func(ticker, date)
-        if result is not None:
-            calls, puts = result
-            if not calls.empty:
-                calls['expiry_date'] = date  # Add expiry date column
-                all_calls.append(calls)
-            if not puts.empty:
-                puts['expiry_date'] = date  # Add expiry date column
-                all_puts.append(puts)
+    # Capture context for threads
+    ctx = get_script_run_ctx() if get_script_run_ctx else None
+
+    def process_single_date(date):
+        if add_script_run_ctx and ctx:
+            add_script_run_ctx(threading.current_thread(), ctx)
+        try:
+            return process_func(ticker, date)
+        except Exception as e:
+            print(f"Error processing date {date}: {e}")
+            return None
+
+    # Use ThreadPoolExecutor to fetch data in parallel
+    # Limit max_workers to avoid hitting API rate limits too hard, though yfinance is generally lenient
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        # Submit all tasks
+        future_to_date = {}
+        for date in expiry_dates:
+            future = executor.submit(process_single_date, date)
+            future_to_date[future] = date
+        
+        # Process results as they complete
+        for future in concurrent.futures.as_completed(future_to_date):
+            date = future_to_date[future]
+            try:
+                result = future.result()
+                if result is not None:
+                    calls, puts = result
+                    if not calls.empty:
+                        calls = calls.copy()
+                        calls['expiry_date'] = date  # Add expiry date column
+                        all_calls.append(calls)
+                    if not puts.empty:
+                        puts = puts.copy()
+                        puts['expiry_date'] = date  # Add expiry date column
+                        all_puts.append(puts)
+            except Exception as e:
+                print(f"Exception for date {date}: {e}")
     
     if all_calls and all_puts:
         combined_calls = pd.concat(all_calls, ignore_index=True)
@@ -2764,9 +2900,47 @@ def create_iv_surface(calls_df, puts_df, current_price, selected_dates=None):
         calls_df = calls_df[calls_df['extracted_expiry'].isin(selected_dates)]
         puts_df = puts_df[puts_df['extracted_expiry'].isin(selected_dates)]
     
-    # Combine calls and puts and drop rows with NaN values
+    # Add flag for IV calculation
+    calls_df = calls_df.copy()
+    puts_df = puts_df.copy()
+    calls_df['flag'] = 'c'
+    puts_df['flag'] = 'p'
+
+    # Combine calls and puts
     options_data = pd.concat([calls_df, puts_df])
-    options_data = options_data.dropna(subset=['impliedVolatility', 'strike', 'extracted_expiry'])
+    
+    # Calculate IV manually
+    r = st.session_state.get('risk_free_rate', 0.04)
+    
+    # Pre-calculate time to expiration for all unique dates to avoid repeated calls
+    unique_dates = options_data['extracted_expiry'].unique()
+    t_map = {date: max(calculate_time_to_expiration(date), 1e-5) for date in unique_dates}
+
+    def calc_iv_safe(row):
+        try:
+            t = t_map.get(row['extracted_expiry'])
+            if t is None: return None
+            
+            bid = row.get('bid', 0)
+            ask = row.get('ask', 0)
+            if bid > 0 and ask > 0:
+                price = (bid + ask) / 2
+            else:
+                price = row.get('lastPrice', 0)
+            
+            if price <= 0: return None
+            
+            iv = calculate_implied_volatility(price, current_price, row['strike'], t, r, row['flag'])
+            if iv is not None and 0 < iv <= 5.0:
+                return iv
+            return None
+        except:
+            return None
+
+    options_data['calc_iv'] = options_data.apply(calc_iv_safe, axis=1)
+    
+    # Drop rows with invalid calculated IV
+    options_data = options_data.dropna(subset=['calc_iv', 'strike', 'extracted_expiry'])
     
     if options_data.empty:
         st.warning("No valid options data available for IV surface.")
@@ -2781,8 +2955,8 @@ def create_iv_surface(calls_df, puts_df, current_price, selected_dates=None):
         lambda x: (x - get_now_et().date()).days / 30.44
     )
     
-    # Remove extreme values
-    for col in ['impliedVolatility', 'moneyness', 'months']:
+    # Remove extreme values (using calc_iv instead of impliedVolatility)
+    for col in ['calc_iv', 'moneyness', 'months']:
         q1 = options_data[col].quantile(0.01)
         q99 = options_data[col].quantile(0.99)
         options_data = options_data[
@@ -2808,7 +2982,7 @@ def create_iv_surface(calls_df, puts_df, current_price, selected_dates=None):
     try:
         # Prepare data for interpolation
         points = options_data[['moneyness', 'months']].values
-        values = options_data['impliedVolatility'].values * 100
+        values = options_data['calc_iv'].values * 100  # Use calc_iv
         
         # Initial interpolation
         Z = griddata(
@@ -2881,8 +3055,10 @@ def reset_session_state():
         'vwap_enabled',
         'exposure_metric',
         'delta_adjusted_exposures',
+        'calculate_in_notional',
         'global_selected_expiries',
-        'saved_exposure_heatmap_type'
+        'saved_exposure_heatmap_type',
+        'intraday_level_count'
     }
     
     # Initialize visibility settings if they don't exist
@@ -2919,7 +3095,6 @@ def reset_session_state():
         'charm_expiry_multi',
         'speed_expiry_multi',
         'vomma_expiry_multi',
-        'notional_exposure_expiry_multi',
         'max_pain_expiry_multi',
         'exposure_heatmap_expiry_multi'
     ]
@@ -3348,7 +3523,6 @@ page_icons = {
     "Charm Exposure": "⚡",
     "Speed Exposure": "🚀",
     "Vomma Exposure": "💫",
-    "Exposure by Notional Value": "💰",
     "Delta-Adjusted Value Index": "📉",
     "Max Pain": "🎯",
     "Exposure Heatmap": "🔥",
@@ -3359,7 +3533,7 @@ page_icons = {
 }
 
 pages = ["Dashboard", "OI & Volume", "Gamma Exposure", "Delta Exposure", 
-          "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Exposure by Notional Value", "Delta-Adjusted Value Index", "Max Pain", "Exposure Heatmap", "GEX Surface", "IV Surface",
+          "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Delta-Adjusted Value Index", "Max Pain", "Exposure Heatmap", "GEX Surface", "IV Surface",
           "Implied Probabilities", "Analysis"]
 
 # Create page options with icons
@@ -3388,8 +3562,6 @@ if st.session_state.previous_page != new_page:
         'charm_expiry_multi',
         'speed_expiry_multi',
         'vomma_expiry_multi',
-        'notional_exposure_expiry_multi',
-        'max_pain_expiry_multi',
         'exposure_heatmap_expiry_multi',
         'implied_probabilities_expiry_multi'
     ]
@@ -3428,6 +3600,17 @@ def chart_settings():
             value=st.session_state.delta_adjusted_exposures,
             key='delta_adjusted_exposures',
             help="When enabled, all Greek exposures (Gamma, Vanna, Charm, Speed, Vomma) will be multiplied by Delta to show delta-adjusted values"
+        )
+
+        # Initialize notional calculation setting
+        if 'calculate_in_notional' not in st.session_state:
+            st.session_state.calculate_in_notional = True
+
+        st.checkbox(
+            "Calculate Exposures in Notional ($)",
+            value=st.session_state.calculate_in_notional,
+            key='calculate_in_notional',
+            help="If enabled, exposures are calculated in Dollar value (multiplying by Spot Price). If disabled, they are calculated in Underlying Units (Shares for stocks, Index Units for indices)."
         )
 
         st.write("Colors:")
@@ -3736,6 +3919,14 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
 
     S = float(S)  # Ensure price is float
     
+    # Fetch dividend yield
+    try:
+        stock_info = yf.Ticker(ticker).info
+        q = stock_info.get('dividendYield', 0)
+        if q is None: q = 0
+    except:
+        q = 0
+    
     # Calculate time to expiration more precisely
     today = get_now_et().date()
     t = calculate_time_to_expiration(selected_expiry)
@@ -3748,67 +3939,58 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
          t = 1e-5 # Minimum time for 0DTE at close
 
     t = max(t, 1e-5) # Ensure positive and non-zero
+    r = st.session_state.get('risk_free_rate', 0.04)
+
+    def get_valid_sigma(row, flag):
+        # 1. Try Manual Calculation (Preferred: uses Mid Price)
+        try:
+            # Use mid price if available, else last price
+            bid = row.get('bid', 0)
+            ask = row.get('ask', 0)
+            if bid > 0 and ask > 0:
+                price = (bid + ask) / 2
+            else:
+                price = row.get('lastPrice', 0)
+                
+            if price > 0:
+                calculated_sigma = calculate_implied_volatility(price, S, row['strike'], t, r, flag, q)
+                if calculated_sigma is not None and 0 < calculated_sigma <= 5.0:
+                    return calculated_sigma
+        except Exception:
+            pass
+            
+        # 2. Fallback to YFinance provided IV
+        try:
+            yf_iv = row.get('impliedVolatility')
+            if yf_iv is not None and 0 < yf_iv <= 5.0:
+                return yf_iv
+        except:
+            pass
+            
+        return None
 
     # Compute Greeks for Gamma, Vanna, Delta, Charm, Speed, and Vomma
-    def compute_greeks(row, flag, greek_type):
-        sigma = row.get("impliedVolatility", None)
-        if sigma is None or sigma <= 0:
-            return None
+    def compute_all_greeks(row, flag):
+        sigma = get_valid_sigma(row, flag)
+        if sigma is None:
+            return pd.Series([None] * 6)
         try:
-            delta_val, gamma_val, vanna_val = calculate_greeks(flag, S, row["strike"], t, sigma)
-            if greek_type == "gamma":
-                return gamma_val
-            elif greek_type == "vanna":
-                return vanna_val
-            elif greek_type == "delta":
-                return delta_val
+            delta_val, gamma_val, vanna_val = calculate_greeks(flag, S, row["strike"], t, sigma, r, q)
+            charm_val = calculate_charm(flag, S, row["strike"], t, sigma, r, q)
+            speed_val = calculate_speed(flag, S, row["strike"], t, sigma, r, q)
+            vomma_val = calculate_vomma(flag, S, row["strike"], t, sigma, r, q)
+            
+            return pd.Series([gamma_val, vanna_val, delta_val, charm_val, speed_val, vomma_val])
         except Exception:
-            return None
+            return pd.Series([None] * 6)
 
-    def compute_charm(row, flag):
-        sigma = row.get("impliedVolatility", None)
-        if sigma is None or sigma <= 0:
-            return None
-        try:
-            charm_val = calculate_charm(flag, S, row["strike"], t, sigma)
-            return charm_val
-        except Exception:
-            return None
+    greek_columns = ["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"]
 
-    def compute_speed(row, flag):
-        sigma = row.get("impliedVolatility", None)
-        if sigma is None or sigma <= 0:
-            return None
-        try:
-            speed_val = calculate_speed(flag, S, row["strike"], t, sigma)
-            return speed_val
-        except Exception:
-            return None
-
-    def compute_vomma(row, flag):
-        sigma = row.get("impliedVolatility", None)
-        if sigma is None or sigma <= 0:
-            return None
-        try:
-            vomma_val = calculate_vomma(flag, S, row["strike"], t, sigma)
-            return vomma_val
-        except Exception:
-            return None
-
-    calls = calls.copy()
-    puts = puts.copy()
-    calls["calc_gamma"] = calls.apply(lambda row: compute_greeks(row, "c", "gamma"), axis=1)
-    puts["calc_gamma"] = puts.apply(lambda row: compute_greeks(row, "p", "gamma"), axis=1)
-    calls["calc_vanna"] = calls.apply(lambda row: compute_greeks(row, "c", "vanna"), axis=1)
-    puts["calc_vanna"] = puts.apply(lambda row: compute_greeks(row, "p", "vanna"), axis=1)
-    calls["calc_delta"] = calls.apply(lambda row: compute_greeks(row, "c", "delta"), axis=1)
-    puts["calc_delta"] = puts.apply(lambda row: compute_greeks(row, "p", "delta"), axis=1)
-    calls["calc_charm"] = calls.apply(lambda row: compute_charm(row, "c"), axis=1)
-    puts["calc_charm"] = puts.apply(lambda row: compute_charm(row, "p"), axis=1)
-    calls["calc_speed"] = calls.apply(lambda row: compute_speed(row, "c"), axis=1)
-    puts["calc_speed"] = puts.apply(lambda row: compute_speed(row, "p"), axis=1)
-    calls["calc_vomma"] = calls.apply(lambda row: compute_vomma(row, "c"), axis=1)
-    puts["calc_vomma"] = puts.apply(lambda row: compute_vomma(row, "p"), axis=1)
+    if not calls.empty:
+        calls[greek_columns] = calls.apply(lambda row: compute_all_greeks(row, "c"), axis=1)
+    
+    if not puts.empty:
+        puts[greek_columns] = puts.apply(lambda row: compute_all_greeks(row, "p"), axis=1)
 
     calls = calls.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"])
     puts = puts.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"])
@@ -3828,25 +4010,29 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
         calls_metric = calls['openInterest']
         puts_metric = puts['openInterest']
 
+    # Determine if we should calculate in notional (dollars) or underlying units (shares/index units)
+    use_notional = st.session_state.get('calculate_in_notional', True)
+    spot_multiplier = S if use_notional else 1.0
+
     # GEX = Gamma * Metric * Contract Size * Spot Price^2 * 0.01 (Dollar Gamma per 1% move in underlying)
-    calls["GEX"] = calls["calc_gamma"] * calls_metric * 100 * S * S * 0.01
-    puts["GEX"] = puts["calc_gamma"] * puts_metric * 100 * S * S * 0.01
+    calls["GEX"] = calls["calc_gamma"] * calls_metric * 100 * S * spot_multiplier * 0.01
+    puts["GEX"] = puts["calc_gamma"] * puts_metric * 100 * S * spot_multiplier * 0.01
     
     # VEX = Vanna * Metric * Contract Size * Spot Price * 0.01 (Dollar Vanna per 1 vol point change)
-    calls["VEX"] = calls["calc_vanna"] * calls_metric * 100 * S * 0.01
-    puts["VEX"] = puts["calc_vanna"] * puts_metric * 100 * S * 0.01
+    calls["VEX"] = calls["calc_vanna"] * calls_metric * 100 * spot_multiplier * 0.01
+    puts["VEX"] = puts["calc_vanna"] * puts_metric * 100 * spot_multiplier * 0.01
     
     # DEX = Delta * Metric * Contract Size * Spot Price (Dollar Delta Exposure)
-    calls["DEX"] = calls["calc_delta"] * calls_metric * 100 * S
-    puts["DEX"] = puts["calc_delta"] * puts_metric * 100 * S
+    calls["DEX"] = calls["calc_delta"] * calls_metric * 100 * spot_multiplier
+    puts["DEX"] = puts["calc_delta"] * puts_metric * 100 * spot_multiplier
     
     # Charm = Charm * Metric * Contract Size * Spot Price / 365 (Dollar Charm per 1 day decay)
-    calls["Charm"] = calls["calc_charm"] * calls_metric * 100 * S / 365.0
-    puts["Charm"] = puts["calc_charm"] * puts_metric * 100 * S / 365.0
+    calls["Charm"] = calls["calc_charm"] * calls_metric * 100 * spot_multiplier / 365.0
+    puts["Charm"] = puts["calc_charm"] * puts_metric * 100 * spot_multiplier / 365.0
     
     # Speed = Speed * Metric * Contract Size * Spot Price^2 * 0.01 (Dollar Speed per 1% move)
-    calls["Speed"] = calls["calc_speed"] * calls_metric * 100 * S * S * 0.01
-    puts["Speed"] = puts["calc_speed"] * puts_metric * 100 * S * S * 0.01
+    calls["Speed"] = calls["calc_speed"] * calls_metric * 100 * S * spot_multiplier * 0.01
+    puts["Speed"] = puts["calc_speed"] * puts_metric * 100 * S * spot_multiplier * 0.01
     
     # Vomma = Vomma * Metric * Contract Size * 0.01 (Dollar Vomma per 1 vol point change)
     calls["Vomma"] = calls["calc_vomma"] * calls_metric * 100 * 0.01
@@ -3928,10 +4114,11 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     # Get the metric being used and add it to the title
     metric_name = st.session_state.get('exposure_metric', 'Open Interest')
     delta_adjusted_label = " (Δ-Adjusted)" if st.session_state.get('delta_adjusted_exposures', False) and exposure_type != 'DEX' else ""
+    notional_label = " ($)" if st.session_state.get('calculate_in_notional', True) else ""
     
     # Update title to include total Greek values with colored values using HTML and metric info
     title_with_totals = (
-        f"{title}{delta_adjusted_label} ({metric_name})     "
+        f"{title}{delta_adjusted_label}{notional_label} ({metric_name})     "
         f"<span style='color: {st.session_state.call_color}'>{total_call_value:,.0f}</span> | "
         f"<span style='color: {st.session_state.put_color}'>{total_put_value:,.0f}</span>"
     )
@@ -5221,14 +5408,40 @@ if st.session_state.current_page == "OI & Volume":
                             combined_data = []
                             success_messages = []
                             
-                            # Fetch data for each selected expiration date
-                            for expiry_date in selected_expiry_dates:
-                                data, message = download_volume_csv(ticker, "U", expiry_date)
+                            # Capture context for threads
+                            ctx = get_script_run_ctx() if get_script_run_ctx else None
+
+                            def fetch_mm_data(expiry_date):
+                                if add_script_run_ctx and ctx:
+                                    add_script_run_ctx(threading.current_thread(), ctx)
+                                return download_volume_csv(ticker, "U", expiry_date), expiry_date
+
+                            # Fetch data for each selected expiration date in parallel
+                            with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                                future_to_date = {}
+                                for date in selected_expiry_dates:
+                                    future = executor.submit(fetch_mm_data, date)
+                                    future_to_date[future] = date
+                                
+                                # Collect results as they complete, but we want to maintain order or just collect all
+                                # Since order doesn't strictly matter for combination, we can just collect
+                                results = []
+                                for future in concurrent.futures.as_completed(future_to_date):
+                                    try:
+                                        (data, message), date = future.result()
+                                        results.append((date, data, message))
+                                    except Exception as e:
+                                        results.append((future_to_date[future], None, f"Error: {e}"))
+                            
+                            # Sort results by date to keep messages consistent
+                            results.sort(key=lambda x: x[0])
+                            
+                            for date, data, message in results:
                                 if data:
                                     combined_data.append(data)
-                                    success_messages.append(f"✓ {expiry_date}")
+                                    success_messages.append(f"✓ {date}")
                                 else:
-                                    success_messages.append(f"✗ {expiry_date}: {message}")
+                                    success_messages.append(f"✗ {date}: {message}")
                             
                             # Combine all CSV data
                             if combined_data:
@@ -5760,163 +5973,6 @@ elif st.session_state.current_page == "Vomma Exposure":
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
                 st.plotly_chart(fig_bar, width='stretch')
-
-elif st.session_state.current_page == "Exposure by Notional Value":
-    with main_placeholder.container():
-        page_name = "notional"  # Use consistent page name for compute_greeks_and_charts
-        col1, col2 = st.columns([0.94, 0.06])
-        with col1:
-            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key="notional_exposure_ticker")
-        with col2:
-            st.write("")  # Add some spacing
-            st.write("")  # Add some spacing
-            if st.button("🔄", key="refresh_button_notional"):
-                st.cache_data.clear()  # Clear the cache before rerunning
-                st.rerun()
-        ticker = format_ticker(user_ticker)
-        
-        # Clear cache if ticker changes
-        if ticker != saved_ticker:
-            st.cache_data.clear()
-            save_ticker(ticker)  # Save the ticker
-        
-        if ticker:
-            # Fetch price once
-            S = get_current_price(ticker)
-            if S is None:
-                st.error("Could not fetch current price.")
-                st.stop()
-
-            stock = yf.Ticker(ticker)
-            available_dates = stock.options
-            if not available_dates:
-                st.warning("No options data available for this ticker.")
-            else:
-                selected_expiry_dates, selector_container = expiry_selector_fragment(st.session_state.current_page, available_dates)
-                st.session_state.expiry_selector_container = selector_container
-                
-                if not selected_expiry_dates:
-                    st.warning("Please select at least one expiration date.")
-                    st.stop()
-                
-                all_calls, all_puts = fetch_and_process_multiple_dates(
-                    ticker, 
-                    selected_expiry_dates,
-                    lambda t, d: compute_greeks_and_charts(t, d, page_name, S)[:2]  # Only take calls and puts
-                )
-                
-                if all_calls.empty and all_puts.empty:
-                    st.warning("No options data available for the selected dates.")
-                    st.stop()
-                
-                # Calculate notional value exposure from raw greek values
-                def calculate_notional_exposure(df, exposure_col, spot_price):
-                    """Calculate notional value exposure: Greek × Volume/OI × Contract Size × Spot Price × Contract Price
-                    This represents the total dollar exposure weighted by the option premium (notional value)."""
-                    if exposure_col not in df.columns:
-                        return df
-                    
-                    # Use lastPrice if available, otherwise use ask price
-                    price_col = 'lastPrice' if 'lastPrice' in df.columns else 'ask'
-                    
-                    # Determine which volume metric to use
-                    metric_type = st.session_state.get('exposure_metric', 'Open Interest')
-                    
-                    if metric_type == 'Volume':
-                        metric_series = df['volume']
-                    elif metric_type == 'Volume Weighted by OI':
-                        metric_series = np.sqrt(df['volume'].fillna(0) * df['openInterest'].fillna(0))
-                    else: # Open Interest
-                        metric_series = df['openInterest']
-
-                    # Get delta adjustment factor
-                    delta_adj = 1.0
-                    if st.session_state.get('delta_adjusted_exposures', False) and 'calc_delta' in df.columns and exposure_col != 'DEX':
-                         delta_adj = df['calc_delta'].abs()
-
-                    # Determine move scaling factor
-                    # Always use Per 1% Move
-                    move_scale = 0.01 * spot_price
-                    
-                    # Calculate notional exposure from raw greek values
-                    # Notional = Greek Exposure (per $1 move) × Contract Premium (to weight by notional value)
-                    if exposure_col == "GEX":
-                        # Notional = Gamma × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_gamma'] * metric_series * 100 * spot_price * df[price_col] * delta_adj * move_scale
-                    elif exposure_col == "VEX":
-                        # Notional = Vanna × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_vanna'] * metric_series * 100 * spot_price * df[price_col] * delta_adj
-                    elif exposure_col == "DEX":
-                        # Notional = Delta × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_delta'] * metric_series * 100 * spot_price * df[price_col]
-                    elif exposure_col == "Charm":
-                        # Notional = Charm × Volume/OI × Contract Size × Spot Price × Contract Price / 365
-                        df[f'{exposure_col}_notional'] = df['calc_charm'] * metric_series * 100 * spot_price * df[price_col] / 365.0 * delta_adj
-                    elif exposure_col == "Speed":
-                        # Notional = Speed × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_speed'] * metric_series * 100 * spot_price * df[price_col] * delta_adj * move_scale
-                    elif exposure_col == "Vomma":
-                        # Notional = Vomma × Volume/OI × Contract Size × Spot Price × Contract Price
-                        df[f'{exposure_col}_notional'] = df['calc_vomma'] * metric_series * 100 * spot_price * df[price_col] * delta_adj
-                    
-                    return df
-                
-                # Calculate notional exposure for all exposure types
-                for exposure_type in ["GEX", "VEX", "DEX", "Charm", "Speed", "Vomma"]:
-                    if f'calc_{exposure_type.lower()}' in all_calls.columns or exposure_type in all_calls.columns:
-                        all_calls = calculate_notional_exposure(all_calls, exposure_type, S)
-                        all_puts = calculate_notional_exposure(all_puts, exposure_type, S)
-                
-                # Create tabs for different exposure types
-                tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Gamma (GEX)", "Vanna (VEX)", "Delta (DEX)", "Charm", "Speed", "Vomma"])
-                
-                with tab1:
-                    if "GEX_notional" in all_calls.columns:
-                        title = f"GEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
-                        fig_gex = create_exposure_bar_chart(all_calls, all_puts, "GEX_notional", title, S)
-                        st.plotly_chart(fig_gex, width='stretch')
-                    else:
-                        st.warning("GEX data not available.")
-                
-                with tab2:
-                    if "VEX_notional" in all_calls.columns:
-                        title = f"VEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
-                        fig_vex = create_exposure_bar_chart(all_calls, all_puts, "VEX_notional", title, S)
-                        st.plotly_chart(fig_vex, width='stretch')
-                    else:
-                        st.warning("VEX data not available.")
-                
-                with tab3:
-                    if "DEX_notional" in all_calls.columns:
-                        title = f"DEX Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
-                        fig_dex = create_exposure_bar_chart(all_calls, all_puts, "DEX_notional", title, S)
-                        st.plotly_chart(fig_dex, width='stretch')
-                    else:
-                        st.warning("DEX data not available.")
-                
-                with tab4:
-                    if "Charm_notional" in all_calls.columns:
-                        title = f"Charm Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
-                        fig_charm = create_exposure_bar_chart(all_calls, all_puts, "Charm_notional", title, S)
-                        st.plotly_chart(fig_charm, width='stretch')
-                    else:
-                        st.warning("Charm data not available.")
-                
-                with tab5:
-                    if "Speed_notional" in all_calls.columns:
-                        title = f"Speed Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
-                        fig_speed = create_exposure_bar_chart(all_calls, all_puts, "Speed_notional", title, S)
-                        st.plotly_chart(fig_speed, width='stretch')
-                    else:
-                        st.warning("Speed data not available.")
-                
-                with tab6:
-                    if "Vomma_notional" in all_calls.columns:
-                        title = f"Vomma Notional Value Exposure by Strike ({len(selected_expiry_dates)} dates)"
-                        fig_vomma = create_exposure_bar_chart(all_calls, all_puts, "Vomma_notional", title, S)
-                        st.plotly_chart(fig_vomma, width='stretch')
-                    else:
-                        st.warning("Vomma data not available.")
 
 elif st.session_state.current_page == "Dashboard":
     with main_placeholder.container():
@@ -6839,32 +6895,46 @@ elif st.session_state.current_page == "GEX Surface":
                     min_strike = S - strike_range
                     max_strike = S + strike_range
 
-                    for date in selected_expiry_dates:
-                        # Compute greeks using the same function as gamma exposure chart
-                        calls, puts, _, t, selected_expiry, today = compute_greeks_and_charts(ticker, date, "gex", S)
+                    # Capture context for threads
+                    ctx = get_script_run_ctx() if get_script_run_ctx else None
+
+                    def process_gex_date(date):
+                        if add_script_run_ctx and ctx:
+                            add_script_run_ctx(threading.current_thread(), ctx)
+                        return compute_greeks_and_charts(ticker, date, "gex", S)
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                        future_to_date = {executor.submit(process_gex_date, date): date for date in selected_expiry_dates}
                         
-                        if calls is not None and puts is not None:
-                            days_to_exp = (selected_expiry - today).days
-                            
-                            # Filter and process data within strike range
-                            calls = calls[(calls['strike'] >= min_strike) & (calls['strike'] <= max_strike)]
-                            puts = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
-                            
-                            for _, row in calls.iterrows():
-                                if not pd.isna(row['GEX']) and abs(row['GEX']) >= 100:
-                                    all_data.append({
-                                        'strike': row['strike'],
-                                        'days': days_to_exp,
-                                        'gex': row['GEX']
-                                    })
-                            
-                            for _, row in puts.iterrows():
-                                if not pd.isna(row['GEX']) and abs(row['GEX']) >= 100:
-                                    all_data.append({
-                                        'strike': row['strike'],
-                                        'days': days_to_exp,
-                                        'gex': -row['GEX']
-                                    })
+                        for future in concurrent.futures.as_completed(future_to_date):
+                            try:
+                                result = future.result()
+                                if result and result[0] is not None:
+                                    calls, puts, _, t, selected_expiry, today = result
+                                    
+                                    days_to_exp = (selected_expiry - today).days
+                                    
+                                    # Filter and process data within strike range
+                                    calls = calls[(calls['strike'] >= min_strike) & (calls['strike'] <= max_strike)]
+                                    puts = puts[(puts['strike'] >= min_strike) & (puts['strike'] <= max_strike)]
+                                    
+                                    for _, row in calls.iterrows():
+                                        if not pd.isna(row['GEX']) and abs(row['GEX']) >= 100:
+                                            all_data.append({
+                                                'strike': row['strike'],
+                                                'days': days_to_exp,
+                                                'gex': row['GEX']
+                                            })
+                                    
+                                    for _, row in puts.iterrows():
+                                        if not pd.isna(row['GEX']) and abs(row['GEX']) >= 100:
+                                            all_data.append({
+                                                'strike': row['strike'],
+                                                'days': days_to_exp,
+                                                'gex': -row['GEX']
+                                            })
+                            except Exception as e:
+                                print(f"Error processing date {future_to_date[future]}: {e}")
 
                     if not all_data:
                         st.warning("No valid GEX data available.")
@@ -7507,13 +7577,26 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     all_calls_with_greeks = []
                     all_puts_with_greeks = []
                     
-                    for expiry_date in selected_expiry_dates:
-                        result = compute_greeks_and_charts(ticker, expiry_date, "exposure_heatmap", S)
+                    # Capture context for threads
+                    ctx = get_script_run_ctx() if get_script_run_ctx else None
+
+                    def process_date_greeks(expiry_date):
+                        if add_script_run_ctx and ctx:
+                            add_script_run_ctx(threading.current_thread(), ctx)
+                        return compute_greeks_and_charts(ticker, expiry_date, "exposure_heatmap", S)
+
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+                        future_to_date = {executor.submit(process_date_greeks, date): date for date in selected_expiry_dates}
                         
-                        if result and result[0] is not None:
-                            calls_with_greeks, puts_with_greeks, _, _, _, _ = result
-                            all_calls_with_greeks.append(calls_with_greeks)
-                            all_puts_with_greeks.append(puts_with_greeks)
+                        for future in concurrent.futures.as_completed(future_to_date):
+                            try:
+                                result = future.result()
+                                if result and result[0] is not None:
+                                    calls_with_greeks, puts_with_greeks, _, _, _, _ = result
+                                    all_calls_with_greeks.append(calls_with_greeks)
+                                    all_puts_with_greeks.append(puts_with_greeks)
+                            except Exception as e:
+                                print(f"Error processing date {future_to_date[future]}: {e}")
                 
                 if not all_calls_with_greeks or not all_puts_with_greeks:
                     st.error("Unable to calculate exposures for the selected dates")
@@ -7945,6 +8028,14 @@ elif st.session_state.current_page == "Implied Probabilities":
                 st.error("Could not fetch current price.")
                 st.stop()
 
+            # Fetch dividend yield
+            try:
+                stock_info = yf.Ticker(ticker).info
+                q = stock_info.get('dividendYield', 0)
+                if q is None: q = 0
+            except:
+                q = 0
+
             stock = yf.Ticker(ticker)
             available_dates = stock.options
             if not available_dates:
@@ -7984,8 +8075,8 @@ elif st.session_state.current_page == "Implied Probabilities":
                     implied_move_data = calculate_implied_move(S, nearest_calls, nearest_puts)
                     
                     # Calculate delta-based probability strikes (industry standard)
-                    prob_16_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.16)  # ~1 standard deviation
-                    prob_30_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.30)  # Common institutional level
+                    prob_16_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.16, q)  # ~1 standard deviation
+                    prob_30_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.30, q)  # Common institutional level
                     
                     # Display metrics in columns
                     col1, col2, col3 = st.columns(3)
@@ -8144,7 +8235,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                     prob_data = []
                     
                     for prob in prob_levels:
-                        prob_info = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, prob)
+                        prob_info = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, prob, q)
                         if prob_info:
                             prob_data.append({
                                 'Probability Level': f"{prob*100:.0f}%",
@@ -8175,7 +8266,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                     st.subheader("Probability Visualization")
                     
                     # Calculate probability distribution
-                    prob_df = calculate_probability_distribution(nearest_calls, nearest_puts, S, nearest_expiry)
+                    prob_df = calculate_probability_distribution(nearest_calls, nearest_puts, S, nearest_expiry, q)
                     
                     # Create comprehensive chart
                     if not prob_df.empty:
