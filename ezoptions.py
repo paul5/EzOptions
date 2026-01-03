@@ -4016,10 +4016,9 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
         calls_metric = calls['volume']
         puts_metric = puts['volume']
     elif metric_type == 'Volume Weighted by OI':
-        # Geometric Mean: sqrt(Volume * OI)
-        # This balances both metrics and keeps the scale reasonable
-        calls_metric = np.sqrt(calls['volume'].fillna(0) * calls['openInterest'].fillna(0))
-        puts_metric = np.sqrt(puts['volume'].fillna(0) * puts['openInterest'].fillna(0))
+        # Average of Volume and OI: (Volume + OI) / 2
+        calls_metric = (calls['volume'].fillna(0) + calls['openInterest'].fillna(0)) / 2
+        puts_metric = (puts['volume'].fillna(0) + puts['openInterest'].fillna(0)) / 2
     else: # Open Interest
         calls_metric = calls['openInterest']
         puts_metric = puts['openInterest']
@@ -4668,8 +4667,8 @@ def create_davi_chart(calls, puts, S, date_count=1):
         calls_metric = calls_df['volume'].fillna(0)
         puts_metric = puts_df['volume'].fillna(0)
     elif metric_type == 'Volume Weighted by OI':
-        calls_metric = np.sqrt(calls_df['volume'].fillna(0) * calls_df['openInterest'].fillna(0))
-        puts_metric = np.sqrt(puts_df['volume'].fillna(0) * puts_df['openInterest'].fillna(0))
+        calls_metric = (calls_df['volume'].fillna(0) + calls_df['openInterest'].fillna(0)) / 2
+        puts_metric = (puts_df['volume'].fillna(0) + puts_df['openInterest'].fillna(0)) / 2
     else: # Open Interest
         calls_metric = calls_df['openInterest'].fillna(0)
         puts_metric = puts_df['openInterest'].fillna(0)
