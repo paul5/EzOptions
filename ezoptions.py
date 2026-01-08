@@ -421,9 +421,105 @@ def calculate_strike_range(current_price, percentage=None):
 @st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
 def fetch_options_for_date(ticker, date, S=None):
     """Fetch options data for a specific date with caching"""
+    if ticker == "MARKET":
+        # Get prices for scaling (Base price is ^GSPC)
+        spx_price = S if S else get_current_price("^SPX")
+        qqq_price = get_current_price("QQQ")
+        iwm_price = get_current_price("IWM")
+        
+        if not (spx_price and qqq_price and iwm_price):
+             # Try our best with what we have, but SPX is required for scaling base
+             if not spx_price:
+                 return pd.DataFrame(), pd.DataFrame()
+        
+        # Calculate scaling factors (Target Base / Source Base)
+        # We scale strikes of QQQ/IWM up to SPX levels
+        qqq_factor = spx_price / qqq_price if qqq_price else 0
+        iwm_factor = spx_price / iwm_price if iwm_price else 0
+        
+        calls_list = []
+        puts_list = []
+        spx_strikes_grid = None
+        
+        # Helper to fetch and scale
+        def add_scaled_data(tick, price, factor):
+            try:
+                # Recursive call to fetch data for component ticker
+                c, p = fetch_options_for_date(tick, date, price)
+                
+                cols_to_scale_up = ['lastPrice', 'bid', 'ask', 'change', 'strike']
+                cols_to_scale_down = ['volume', 'openInterest']
+                
+                if not c.empty:
+                    c = c.copy()
+                    if factor != 1.0:
+                        for col in cols_to_scale_up:
+                            if col in c.columns:
+                                c[col] = c[col] * factor
+                        for col in cols_to_scale_down:
+                            if col in c.columns:
+                                c[col] = c[col] / factor
+                        
+                        # Snap to SPX grid if available
+                        if spx_strikes_grid is not None and len(spx_strikes_grid) > 0 and 'strike' in c.columns:
+                            vals = c['strike'].values
+                            # Find nearest strike in grid
+                            idx = np.abs(spx_strikes_grid[None, :] - vals[:, None]).argmin(axis=1)
+                            c['strike'] = spx_strikes_grid[idx]
+                        elif 'strike' in c.columns:
+                             # Fallback to rounding if grid is somehow missing for non-1.0 factor
+                             c['strike'] = c['strike'].round(0).astype(int)
+                    
+                    calls_list.append(c)
+                
+                if not p.empty:
+                    p = p.copy()
+                    if factor != 1.0:
+                        for col in cols_to_scale_up:
+                            if col in p.columns:
+                                p[col] = p[col] * factor
+                        for col in cols_to_scale_down:
+                             if col in p.columns:
+                                p[col] = p[col] / factor
+                        
+                        # Snap to SPX grid if available
+                        if spx_strikes_grid is not None and len(spx_strikes_grid) > 0 and 'strike' in p.columns:
+                            vals = p['strike'].values
+                            # Find nearest strike in grid
+                            idx = np.abs(spx_strikes_grid[None, :] - vals[:, None]).argmin(axis=1)
+                            p['strike'] = spx_strikes_grid[idx]
+                        elif 'strike' in p.columns:
+                            p['strike'] = p['strike'].round(0).astype(int)
+
+                    puts_list.append(p)
+            except Exception:
+                pass # Date might not exist for this ticker
+
+        # Fetch for all components (Chain source is ^SPX)
+        add_scaled_data("^SPX", spx_price, 1.0)
+        
+        # Build reference grid from SPX data
+        grid_strikes = set()
+        # Assume first item in lists is SPX since called first
+        if calls_list and 'strike' in calls_list[0].columns:
+            grid_strikes.update(calls_list[0]['strike'].tolist())
+        if puts_list and 'strike' in puts_list[0].columns:
+            grid_strikes.update(puts_list[0]['strike'].tolist())
+            
+        if grid_strikes:
+            spx_strikes_grid = np.array(sorted(list(grid_strikes)))
+        
+        if qqq_factor: add_scaled_data("QQQ", qqq_price, qqq_factor)
+        if iwm_factor: add_scaled_data("IWM", iwm_price, iwm_factor)
+        
+        combined_calls = pd.concat(calls_list, ignore_index=True) if calls_list else pd.DataFrame()
+        combined_puts = pd.concat(puts_list, ignore_index=True) if puts_list else pd.DataFrame()
+        
+        return combined_calls, combined_puts
+
     print(f"Fetching option chain for {ticker} EXP {date}")
     try:
-        stock = yf.Ticker(ticker)
+        stock = get_ticker_object(ticker)
         chain = stock.option_chain(date)
         calls = chain.calls
         puts = chain.puts
@@ -444,8 +540,89 @@ def fetch_options_for_date(ticker, date, S=None):
 def fetch_all_options(ticker):
     """Fetch all available options with caching"""
     print(f"Fetching all options for {ticker}")
+    
+    if ticker == "MARKET":
+        spx_price = get_current_price("^SPX")
+        if not spx_price: return pd.DataFrame(), pd.DataFrame()
+        
+        qqq_price = get_current_price("QQQ") 
+        iwm_price = get_current_price("IWM")
+        
+        qqq_factor = spx_price / qqq_price if qqq_price else 1
+        iwm_factor = spx_price / iwm_price if iwm_price else 1
+        
+        calls_list = []
+        puts_list = []
+        spx_strikes_grid = None
+        
+        # Helper to fetch and scale
+        def process_component(tick, factor):
+            try:
+                c, p = fetch_all_options(tick)
+                cols_to_scale_up = ['lastPrice', 'bid', 'ask', 'change', 'strike']
+                cols_to_scale_down = ['volume', 'openInterest']
+                
+                if not c.empty:
+                    c = c.copy()
+                    if factor != 1.0: 
+                        for col in cols_to_scale_up:
+                            if col in c.columns:
+                                c[col] = c[col] * factor
+                        for col in cols_to_scale_down:
+                             if col in c.columns:
+                                c[col] = c[col] / factor
+                    
+                        # Snap to SPX grid if available
+                        if spx_strikes_grid is not None and len(spx_strikes_grid) > 0 and 'strike' in c.columns:
+                            vals = c['strike'].values
+                            idx = np.abs(spx_strikes_grid[None, :] - vals[:, None]).argmin(axis=1)
+                            c['strike'] = spx_strikes_grid[idx]
+                        elif 'strike' in c.columns:
+                            c['strike'] = c['strike'].round(0).astype(int)
+                    
+                    calls_list.append(c)
+                if not p.empty:
+                    p = p.copy()
+                    if factor != 1.0: 
+                        for col in cols_to_scale_up:
+                            if col in p.columns:
+                                p[col] = p[col] * factor
+                        for col in cols_to_scale_down:
+                             if col in p.columns:
+                                p[col] = p[col] / factor
+                    
+                        # Snap to SPX grid if available
+                        if spx_strikes_grid is not None and len(spx_strikes_grid) > 0 and 'strike' in p.columns:
+                            vals = p['strike'].values
+                            idx = np.abs(spx_strikes_grid[None, :] - vals[:, None]).argmin(axis=1)
+                            p['strike'] = spx_strikes_grid[idx]
+                        elif 'strike' in p.columns:
+                            p['strike'] = p['strike'].round(0).astype(int)
+                    puts_list.append(p)
+            except: pass
+
+        process_component("^SPX", 1.0)
+        
+        # Build reference grid from SPX data
+        grid_strikes = set()
+        if calls_list and 'strike' in calls_list[0].columns:
+            grid_strikes.update(calls_list[0]['strike'].tolist())
+        if puts_list and 'strike' in puts_list[0].columns:
+            grid_strikes.update(puts_list[0]['strike'].tolist())
+            
+        if grid_strikes:
+            spx_strikes_grid = np.array(sorted(list(grid_strikes)))
+            
+        process_component("QQQ", qqq_factor)
+        process_component("IWM", iwm_factor)
+        
+        combined_calls = pd.concat(calls_list, ignore_index=True) if calls_list else pd.DataFrame()
+        combined_puts = pd.concat(puts_list, ignore_index=True) if puts_list else pd.DataFrame()
+        
+        return combined_calls, combined_puts
+
     try:
-        stock = yf.Ticker(ticker)
+        stock = get_ticker_object(ticker)
         all_calls = []
         all_puts = []
         
@@ -1207,7 +1384,7 @@ def fetch_all_options(ticker):
     Returns two DataFrames: one for calls and one for puts, with an added column 'extracted_expiry'.
     """
     print(f"Fetching avaiable expirations for {ticker}")  # Add print statement
-    stock = yf.Ticker(ticker)
+    stock = get_ticker_object(ticker)
     all_calls = []
     all_puts = []
     
@@ -1284,9 +1461,18 @@ def fetch_all_options(ticker):
     return combined_calls, combined_puts
 
 # Charts and price fetching
+def get_ticker_object(ticker):
+    """Helper to get yf.Ticker object, handling MARKET special case"""
+    if ticker == "MARKET":
+        return yf.Ticker("^SPX")
+    return yf.Ticker(ticker)
+
 @st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
 def get_current_price(ticker):
     """Get current price with fallback logic"""
+    if ticker == "MARKET":
+        return get_current_price("^SPX")
+
     print(f"Fetching current price for {ticker}")
     formatted_ticker = ticker.replace('%5E', '^')
     
@@ -1302,7 +1488,7 @@ def get_current_price(ticker):
             print(f"Error fetching SPX price: {str(e)}")
     
     try:
-        stock = yf.Ticker(ticker)
+        stock = get_ticker_object(ticker)
         price = stock.info.get("regularMarketPrice")
         if price is None:
             price = stock.fast_info.get("lastPrice")
@@ -2830,7 +3016,7 @@ def get_combined_intraday_data(ticker):
     
     # Use ^GSPC for SPX chart data
     chart_ticker = ticker
-    if formatted_ticker in ['^SPX', 'SPX', '%5ESPX']:
+    if ticker == "MARKET" or formatted_ticker in ['^SPX', 'SPX', '%5ESPX']:
         chart_ticker = '^GSPC'
         
     stock = yf.Ticker(chart_ticker)
@@ -3935,9 +4121,12 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     
     # Fetch dividend yield
     try:
-        stock_info = yf.Ticker(ticker).info
-        q = stock_info.get('dividendYield', 0)
-        if q is None: q = 0
+        if ticker == "MARKET":
+            q = 0
+        else:
+            stock_info = get_ticker_object(ticker).info
+            q = stock_info.get('dividendYield', 0)
+            if q is None: q = 0
     except:
         q = 0
     
@@ -4985,7 +5174,7 @@ if st.session_state.current_page == "OI & Volume":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
@@ -5643,7 +5832,7 @@ elif st.session_state.current_page == "Gamma Exposure":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
@@ -5707,7 +5896,7 @@ elif st.session_state.current_page == "Vanna Exposure":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
@@ -5771,7 +5960,7 @@ elif st.session_state.current_page == "Delta Exposure":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
@@ -5835,7 +6024,7 @@ elif st.session_state.current_page == "Charm Exposure":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
@@ -5899,7 +6088,7 @@ elif st.session_state.current_page == "Speed Exposure":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
@@ -5963,7 +6152,7 @@ elif st.session_state.current_page == "Vomma Exposure":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
@@ -6028,7 +6217,7 @@ elif st.session_state.current_page == "Dashboard":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
@@ -6488,7 +6677,7 @@ elif st.session_state.current_page == "Dashboard":
                             try:
                                 # Use ^GSPC for SPX info
                                 info_ticker = st.session_state.saved_ticker
-                                if info_ticker in ['^SPX', 'SPX', '%5ESPX']:
+                                if info_ticker == "MARKET" or info_ticker in ['^SPX', 'SPX', '%5ESPX']:
                                     info_ticker = '^GSPC'
                                     
                                 stock_info = yf.Ticker(info_ticker).info
@@ -6628,7 +6817,7 @@ elif st.session_state.current_page == "Max Pain":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
@@ -6693,7 +6882,7 @@ elif st.session_state.current_page == "IV Surface":
                 st.stop()
 
             # Get options data
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
 
             if not available_dates:
@@ -6897,7 +7086,7 @@ elif st.session_state.current_page == "GEX Surface":
                 st.stop()
 
             # Get options data
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
 
             if not available_dates:
@@ -7121,7 +7310,7 @@ elif st.session_state.current_page == "Analysis":
 
             # Use ^GSPC for SPX historical data
             analysis_ticker = ticker
-            if ticker in ['^SPX', 'SPX', '%5ESPX']:
+            if ticker == "MARKET" or ticker in ['^SPX', 'SPX', '%5ESPX']:
                 analysis_ticker = '^GSPC'
                 
             stock = yf.Ticker(analysis_ticker)
@@ -7455,7 +7644,7 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
                 st.error("Could not fetch current price.")
                 st.stop()
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
@@ -7547,7 +7736,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     st.stop()
                 
                 # Get options data
-                stock = yf.Ticker(ticker)
+                stock = get_ticker_object(ticker)
                 available_dates = stock.options
                 
                 if not available_dates:
@@ -8057,13 +8246,16 @@ elif st.session_state.current_page == "Implied Probabilities":
 
             # Fetch dividend yield
             try:
-                stock_info = yf.Ticker(ticker).info
-                q = stock_info.get('dividendYield', 0)
-                if q is None: q = 0
+                if ticker == "MARKET":
+                    q = 0
+                else:
+                    stock_info = get_ticker_object(ticker).info
+                    q = stock_info.get('dividendYield', 0)
+                    if q is None: q = 0
             except:
                 q = 0
 
-            stock = yf.Ticker(ticker)
+            stock = get_ticker_object(ticker)
             available_dates = stock.options
             if not available_dates:
                 st.warning("No options data available for this ticker.")
