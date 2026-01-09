@@ -424,16 +424,18 @@ def fetch_options_for_date(ticker, date, S=None):
     if ticker == "MARKET":
         # Get prices for scaling (Base price is ^GSPC)
         spx_price = S if S else get_current_price("^SPX")
+        spy_price = get_current_price("SPY")
         qqq_price = get_current_price("QQQ")
         iwm_price = get_current_price("IWM")
         
-        if not (spx_price and qqq_price and iwm_price):
+        if not (spx_price and spy_price and qqq_price and iwm_price):
              # Try our best with what we have, but SPX is required for scaling base
              if not spx_price:
                  return pd.DataFrame(), pd.DataFrame()
         
         # Calculate scaling factors (Target Base / Source Base)
-        # We scale strikes of QQQ/IWM up to SPX levels
+        # We scale strikes of SPY/QQQ/IWM up to SPX levels
+        spy_factor = spx_price / spy_price if spy_price else 0
         qqq_factor = spx_price / qqq_price if qqq_price else 0
         iwm_factor = spx_price / iwm_price if iwm_price else 0
         
@@ -509,6 +511,7 @@ def fetch_options_for_date(ticker, date, S=None):
         if grid_strikes:
             spx_strikes_grid = np.array(sorted(list(grid_strikes)))
         
+        if spy_factor: add_scaled_data("SPY", spy_price, spy_factor)
         if qqq_factor: add_scaled_data("QQQ", qqq_price, qqq_factor)
         if iwm_factor: add_scaled_data("IWM", iwm_price, iwm_factor)
         
@@ -545,9 +548,11 @@ def fetch_all_options(ticker):
         spx_price = get_current_price("^SPX")
         if not spx_price: return pd.DataFrame(), pd.DataFrame()
         
+        spy_price = get_current_price("SPY")
         qqq_price = get_current_price("QQQ") 
         iwm_price = get_current_price("IWM")
         
+        spy_factor = spx_price / spy_price if spy_price else 1
         qqq_factor = spx_price / qqq_price if qqq_price else 1
         iwm_factor = spx_price / iwm_price if iwm_price else 1
         
@@ -613,6 +618,7 @@ def fetch_all_options(ticker):
         if grid_strikes:
             spx_strikes_grid = np.array(sorted(list(grid_strikes)))
             
+        process_component("SPY", spy_factor)
         process_component("QQQ", qqq_factor)
         process_component("IWM", iwm_factor)
         
