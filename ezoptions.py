@@ -307,7 +307,7 @@ if 'call_color' not in st.session_state:
 if 'put_color' not in st.session_state:
     st.session_state.put_color = '#FF0000'   # Default red for puts
 if 'vix_color' not in st.session_state:
-    st.session_state.vix_color = '#800080'   # Default purple for VIX
+    st.session_state.vix_color = '#800080'   # Default purple for VIXY
 
 # -------------------------------
 # Helper Functions
@@ -320,7 +320,7 @@ def format_ticker(ticker):
     elif ticker == "NDX":
         return "^NDX"
     elif ticker == "VIX":
-        return "^VIX"
+        return "VIXY"
     elif ticker == "DJI":
         return "^DJI"
     elif ticker == "RUT":
@@ -860,81 +860,56 @@ def create_weekday_returns_chart(returns):
     return fig
 
 def analyze_options_flow(calls_df, puts_df, current_price):
-    """Analyze options flow to determine bought vs sold contracts"""
+    """Analyze options flow focusing on Volume and Premium distribution (ITM vs OTM)."""
     # Deep copy to avoid modifying originals
     calls = calls_df.copy()
     puts = puts_df.copy()
-    
-    # Determine if option is likely bought/sold based on trade price vs bid/ask
-    # For calls: trades near ask = likely bought, trades near bid = likely sold
-    calls['trade_type'] = calls.apply(lambda x: 'bought' if x['lastPrice'] >= (x['bid'] + (x['ask'] - x['bid'])*0.6) else 'sold', axis=1)
-    puts['trade_type'] = puts.apply(lambda x: 'bought' if x['lastPrice'] >= (x['bid'] + (x['ask'] - x['bid'])*0.6) else 'sold', axis=1)
     
     # Add ITM/OTM classification
     calls['moneyness'] = calls.apply(lambda x: 'ITM' if x['strike'] <= current_price else 'OTM', axis=1)
     puts['moneyness'] = puts.apply(lambda x: 'ITM' if x['strike'] >= current_price else 'OTM', axis=1)
     
-    # Calculate volume-weighted stats
+    # Calculate Volume and Premium
+    # Use Mid Price for premium calculation
+    calls['midPrice'] = (calls['bid'].fillna(0) + calls['ask'].fillna(0)) / 2
+    puts['midPrice'] = (puts['bid'].fillna(0) + puts['ask'].fillna(0)) / 2
+
+    calls['premium_val'] = calls['volume'] * calls['midPrice'] * 100
+    puts['premium_val'] = puts['volume'] * puts['midPrice'] * 100
+    
+    # Stats
     call_stats = {
-        'bought': {
-            'volume': calls[calls['trade_type'] == 'bought']['volume'].sum(),
-            'premium': (calls[calls['trade_type'] == 'bought']['volume'] * calls[calls['trade_type'] == 'bought']['lastPrice'] * 100).sum()
-        },
-        'sold': {
-            'volume': calls[calls['trade_type'] == 'sold']['volume'].sum(),
-            'premium': (calls[calls['trade_type'] == 'sold']['volume'] * calls[calls['trade_type'] == 'sold']['lastPrice'] * 100).sum()
+        'volume': calls['volume'].sum(),
+        'premium': calls['premium_val'].sum(),
+        'ITM': {
+            'volume': calls[calls['moneyness'] == 'ITM']['volume'].sum(),
+            'premium': calls[calls['moneyness'] == 'ITM']['premium_val'].sum()
         },
         'OTM': {
             'volume': calls[calls['moneyness'] == 'OTM']['volume'].sum(),
-            'premium': (calls[calls['moneyness'] == 'OTM']['volume'] * calls[calls['moneyness'] == 'OTM']['lastPrice'] * 100).sum()
-        },
-        'ITM': {
-            'volume': calls[calls['moneyness'] == 'ITM']['volume'].sum(), 
-            'premium': (calls[calls['moneyness'] == 'ITM']['volume'] * calls[calls['moneyness'] == 'ITM']['lastPrice'] * 100).sum()
+            'premium': calls[calls['moneyness'] == 'OTM']['premium_val'].sum()
         }
     }
     
     put_stats = {
-        'bought': {
-            'volume': puts[puts['trade_type'] == 'bought']['volume'].sum(),
-            'premium': (puts[puts['trade_type'] == 'bought']['volume'] * puts[puts['trade_type'] == 'bought']['lastPrice'] * 100).sum()
-        },
-        'sold': {
-            'volume': puts[puts['trade_type'] == 'sold']['volume'].sum(),
-            'premium': (puts[puts['trade_type'] == 'sold']['volume'] * puts[puts['trade_type'] == 'sold']['lastPrice'] * 100).sum()
+        'volume': puts['volume'].sum(),
+        'premium': puts['premium_val'].sum(),
+        'ITM': {
+            'volume': puts[puts['moneyness'] == 'ITM']['volume'].sum(),
+            'premium': puts[puts['moneyness'] == 'ITM']['premium_val'].sum()
         },
         'OTM': {
             'volume': puts[puts['moneyness'] == 'OTM']['volume'].sum(),
-            'premium': (puts[puts['moneyness'] == 'OTM']['volume'] * puts[puts['moneyness'] == 'OTM']['lastPrice'] * 100).sum()
-        },
-        'ITM': {
-            'volume': puts[puts['moneyness'] == 'ITM']['volume'].sum(), 
-            'premium': (puts[puts['moneyness'] == 'ITM']['volume'] * puts[puts['moneyness'] == 'ITM']['lastPrice'] * 100).sum()
+            'premium': puts[puts['moneyness'] == 'OTM']['premium_val'].sum()
         }
     }
-    
-    # Calculate OTM bought/sold breakdown
-    otm_calls_bought = calls[(calls['moneyness'] == 'OTM') & (calls['trade_type'] == 'bought')]['volume'].sum()
-    otm_calls_sold = calls[(calls['moneyness'] == 'OTM') & (calls['trade_type'] == 'sold')]['volume'].sum()
-    otm_puts_bought = puts[(puts['moneyness'] == 'OTM') & (puts['trade_type'] == 'bought')]['volume'].sum()
-    otm_puts_sold = puts[(puts['moneyness'] == 'OTM') & (puts['trade_type'] == 'sold')]['volume'].sum()
-    
-    # Calculate total premium values
-    total_call_premium = (calls['volume'] * calls['lastPrice'] * 100).sum()
-    total_put_premium = (puts['volume'] * puts['lastPrice'] * 100).sum()
     
     return {
         'calls': call_stats,
         'puts': put_stats,
-        'otm_detail': {
-            'calls_bought': otm_calls_bought,
-            'calls_sold': otm_calls_sold,
-            'puts_bought': otm_puts_bought,
-            'puts_sold': otm_puts_sold
-        },
         'total_premium': {
-            'calls': total_call_premium,
-            'puts': total_put_premium
+            'calls': call_stats['premium'],
+            'puts': put_stats['premium']
         }
     }
 
@@ -943,179 +918,118 @@ def create_option_flow_charts(flow_data, title="Options Flow Analysis"):
     call_color = st.session_state.call_color
     put_color = st.session_state.put_color
     
-    # Create bar chart for bought vs sold
-    fig_flow = go.Figure()
+    # Chart 1: Total Volume Comparison (Call vs Put)
+    fig_volume = go.Figure()
     
-    # Calls bought/sold
-    fig_flow.add_trace(go.Bar(
-        x=['Calls Bought', 'Calls Sold'],
-        y=[flow_data['calls']['bought']['volume'], flow_data['calls']['sold']['volume']],
-        name='Calls',
-        marker_color=call_color
+    fig_volume.add_trace(go.Bar(
+        x=['Calls', 'Puts'],
+        y=[flow_data['calls']['volume'], flow_data['puts']['volume']],
+        name='Volume',
+        marker_color=[call_color, put_color]
     ))
     
-    # Puts bought/sold
-    fig_flow.add_trace(go.Bar(
-        x=['Puts Bought', 'Puts Sold'],
-        y=[flow_data['puts']['bought']['volume'], flow_data['puts']['sold']['volume']],
-        name='Puts',
-        marker_color=put_color
-    ))
-    
-    fig_flow.update_layout(
+    fig_volume.update_layout(
         title=dict(
-            text=title,
+            text="Total Contract Volume",
             x=0,
             xanchor='left',
             font=dict(size=st.session_state.chart_text_size + 3)
         ),
-        xaxis_title=dict(
-            text='Trade Direction',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        yaxis_title=dict(
-            text='Volume',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        legend=dict(
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        barmode='relative',
-        template="plotly_dark"
+        xaxis_title=dict(text='Option Type', font=dict(size=st.session_state.chart_text_size)),
+        yaxis_title=dict(text='Volume', font=dict(size=st.session_state.chart_text_size)),
+        template="plotly_dark",
+        showlegend=False
     )
     
-    # Create OTM/ITM chart
-    fig_money = go.Figure()
+    # Chart 2: Total Premium Traded (Call vs Put)
+    fig_premium = go.Figure()
     
-    # Calls OTM/ITM
-    fig_money.add_trace(go.Bar(
-        x=['OTM Calls', 'ITM Calls'],
-        y=[flow_data['calls']['OTM']['volume'], flow_data['calls']['ITM']['volume']],
-        name='Calls',
-        marker_color=call_color
+    fig_premium.add_trace(go.Bar(
+        x=['Call Premium', 'Put Premium'],
+        y=[flow_data['total_premium']['calls'], flow_data['total_premium']['puts']],
+        name='Premium',
+        marker_color=[call_color, put_color],
+        texttemplate="$%{y:,.0f}",
+        textposition='auto'
     ))
-    
-    # Puts OTM/ITM
-    fig_money.add_trace(go.Bar(
-        x=['OTM Puts', 'ITM Puts'],
-        y=[flow_data['puts']['OTM']['volume'], flow_data['puts']['ITM']['volume']],
-        name='Puts',
-        marker_color=put_color
-    ))
-    
-    fig_money.update_layout(
-        title=dict(
-            text="OTM vs ITM Volume",
-            x=0,
-            xanchor='left',
-            font=dict(size=st.session_state.chart_text_size + 3)
-        ),
-        xaxis_title=dict(
-            text='Moneyness',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        yaxis_title=dict(
-            text='Volume',
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        legend=dict(
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        barmode='relative',
-        template="plotly_dark"
-    )
-    
-    # Premium chart (donut)
-    premium_labels = ['Call Premium', 'Put Premium']
-    premium_values = [flow_data['total_premium']['calls'], flow_data['total_premium']['puts']]
-    
-    fig_premium = go.Figure(data=[go.Pie(
-        labels=premium_labels,
-        values=premium_values,
-        hole=0.4,
-        marker=dict(colors=[call_color, put_color])
-    )])
-    
-    total_premium = flow_data['total_premium']['calls'] + flow_data['total_premium']['puts']
-    premium_text = f"${total_premium:,.0f}"
     
     fig_premium.update_layout(
         title=dict(
-            text="Total Premium Flow",
+            text="Total Premium Traded ($)",
             x=0,
             xanchor='left',
             font=dict(size=st.session_state.chart_text_size + 3)
         ),
-        legend=dict(font=dict(size=st.session_state.chart_text_size)),
-        annotations=[dict(
-            text=premium_text,
-            x=0.5, y=0.5,
-            font=dict(size=st.session_state.chart_text_size + 3),
-            showarrow=False
-        )],
-        template="plotly_dark"
+        xaxis_title=dict(text='Option Type', font=dict(size=st.session_state.chart_text_size)),
+        yaxis_title=dict(text='Premium Value ($)', font=dict(size=st.session_state.chart_text_size)),
+        template="plotly_dark",
+        showlegend=False
     )
     
-    # OTM Analysis Breakdown (horizontal)
-    fig_otm = go.Figure()
+    # Chart 3: ITM vs OTM Volume Details
+    fig_itm_otm_vol = go.Figure()
     
-    # OTM Calls bought/sold
-    fig_otm.add_trace(go.Bar(
-        y=['OTM Calls'],
-        x=[flow_data['otm_detail']['calls_bought']],
-        name='Bought',
-        orientation='h',
-        marker_color='lightgreen',
-        offsetgroup=0
+    fig_itm_otm_vol.add_trace(go.Bar(
+        name='ITM',
+        x=['Calls', 'Puts'],
+        y=[flow_data['calls']['ITM']['volume'], flow_data['puts']['ITM']['volume']],
+        marker_color=[call_color, put_color],
+        opacity=1.0  # Solid for ITM
     ))
     
-    fig_otm.add_trace(go.Bar(
-        y=['OTM Calls'],
-        x=[flow_data['otm_detail']['calls_sold']],
-        name='Sold',
-        orientation='h',
-        marker_color='darkgreen',
-        offsetgroup=1
+    fig_itm_otm_vol.add_trace(go.Bar(
+        name='OTM',
+        x=['Calls', 'Puts'],
+        y=[flow_data['calls']['OTM']['volume'], flow_data['puts']['OTM']['volume']],
+        marker_color=[call_color, put_color],
+        opacity=0.5  # Faded for OTM
     ))
     
-    # OTM Puts bought/sold
-    fig_otm.add_trace(go.Bar(
-        y=['OTM Puts'],
-        x=[flow_data['otm_detail']['puts_bought']],
-        name='Bought',
-        orientation='h',
-        marker_color='pink',
-        offsetgroup=0
-    ))
-    
-    fig_otm.add_trace(go.Bar(
-        y=['OTM Puts'],
-        x=[flow_data['otm_detail']['puts_sold']],
-        name='Sold',
-        orientation='h',
-        marker_color='darkred',
-        offsetgroup=1
-    ))
-    
-    fig_otm.update_layout(
+    fig_itm_otm_vol.update_layout(
         title=dict(
-            text="OTM Options Bought vs Sold",
+            text="Volume Breakdown: ITM vs OTM",
             x=0,
             xanchor='left',
             font=dict(size=st.session_state.chart_text_size + 3)
         ),
-        xaxis_title=dict(
-            text='Volume',
-            font=dict(size=st.session_state.chart_text_size)
+        barmode='stack',
+        template="plotly_dark",
+        legend=dict(title="Moneyness")
+    )
+
+    # Chart 4: ITM vs OTM Premium Details
+    fig_itm_otm_prem = go.Figure()
+    
+    fig_itm_otm_prem.add_trace(go.Bar(
+        name='ITM',
+        x=['Calls', 'Puts'],
+        y=[flow_data['calls']['ITM']['premium'], flow_data['puts']['ITM']['premium']],
+        marker_color=[call_color, put_color],
+        opacity=1.0
+    ))
+    
+    fig_itm_otm_prem.add_trace(go.Bar(
+        name='OTM',
+        x=['Calls', 'Puts'],
+        y=[flow_data['calls']['OTM']['premium'], flow_data['puts']['OTM']['premium']],
+        marker_color=[call_color, put_color],
+        opacity=0.5
+    ))
+    
+    fig_itm_otm_prem.update_layout(
+        title=dict(
+            text="Premium Breakdown: ITM vs OTM ($)",
+            x=0,
+            xanchor='left',
+            font=dict(size=st.session_state.chart_text_size + 3)
         ),
-        legend=dict(
-            font=dict(size=st.session_state.chart_text_size)
-        ),
-        barmode='relative',
-        template="plotly_dark"
+        barmode='stack',
+        template="plotly_dark",
+        legend=dict(title="Moneyness"),
+        yaxis=dict(tickformat="$,.0f")
     )
     
-    return fig_flow, fig_money, fig_premium, fig_otm
+    return fig_volume, fig_premium, fig_itm_otm_vol, fig_itm_otm_prem
 
 def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, current_price):
     """Create a heatmap showing premium distribution across strikes and expiries"""
@@ -1133,7 +1047,9 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
             i = expiry_to_idx[row['expiry_date']]
             j = strike_to_idx[row['strike']]
             vol = row['volume'] if pd.notna(row['volume']) else 0
-            price = row['lastPrice'] if pd.notna(row['lastPrice']) else 0
+            bid = row['bid'] if pd.notna(row['bid']) else 0
+            ask = row['ask'] if pd.notna(row['ask']) else 0
+            price = (bid + ask) / 2
             call_premium[i, j] = vol * price * 100
     
     for _, row in puts_df.iterrows():
@@ -1141,7 +1057,9 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
             i = expiry_to_idx[row['expiry_date']]
             j = strike_to_idx[row['strike']]
             vol = row['volume'] if pd.notna(row['volume']) else 0
-            price = row['lastPrice'] if pd.notna(row['lastPrice']) else 0
+            bid = row['bid'] if pd.notna(row['bid']) else 0
+            ask = row['ask'] if pd.notna(row['ask']) else 0
+            price = (bid + ask) / 2
             put_premium[i, j] = vol * price * 100
     
     # Create heatmaps
@@ -1268,7 +1186,9 @@ def create_premium_heatmap(calls_df, puts_df, filtered_strikes, selected_expiry_
             strike_idx = strike_to_idx[row['strike']]
             expiry_idx = expiry_to_idx[row['extracted_expiry'].strftime('%Y-%m-%d')]
             vol = row['volume'] if pd.notna(row['volume']) else 0
-            price = row['lastPrice'] if pd.notna(row['lastPrice']) else 0
+            bid = row['bid'] if pd.notna(row['bid']) else 0
+            ask = row['ask'] if pd.notna(row['ask']) else 0
+            price = (bid + ask) / 2
             call_premium[expiry_idx][strike_idx] += vol * price * 100
     
     for _, row in puts_df.iterrows():
@@ -1276,7 +1196,9 @@ def create_premium_heatmap(calls_df, puts_df, filtered_strikes, selected_expiry_
             strike_idx = strike_to_idx[row['strike']]
             expiry_idx = expiry_to_idx[row['extracted_expiry'].strftime('%Y-%m-%d')]
             vol = row['volume'] if pd.notna(row['volume']) else 0
-            price = row['lastPrice'] if pd.notna(row['lastPrice']) else 0
+            bid = row['bid'] if pd.notna(row['bid']) else 0
+            ask = row['ask'] if pd.notna(row['ask']) else 0
+            price = (bid + ask) / 2
             put_premium[expiry_idx][strike_idx] += vol * price * 100
     
     # Create heatmaps
@@ -2577,17 +2499,11 @@ def calculate_implied_move(S, calls_df, puts_df):
             # Use Mid Price for better accuracy
             call_bid = atm_call['bid'].iloc[0]
             call_ask = atm_call['ask'].iloc[0]
-            if call_bid > 0 and call_ask > 0:
-                call_price = (call_bid + call_ask) / 2
-            else:
-                call_price = atm_call['lastPrice'].iloc[0] if 'lastPrice' in atm_call.columns else atm_call['ask'].iloc[0]
+            call_price = (call_bid + call_ask) / 2
 
             put_bid = atm_put['bid'].iloc[0]
             put_ask = atm_put['ask'].iloc[0]
-            if put_bid > 0 and put_ask > 0:
-                put_price = (put_bid + put_ask) / 2
-            else:
-                put_price = atm_put['lastPrice'].iloc[0] if 'lastPrice' in atm_put.columns else atm_put['ask'].iloc[0]
+            put_price = (put_bid + put_ask) / 2
             
             straddle_price = call_price + put_price
             implied_move_pct = (straddle_price / S) * 100
@@ -2725,10 +2641,7 @@ def calculate_probability_distribution(calls_df, puts_df, S, expiry_date, q=0):
 
                 bid = row.get('bid', 0)
                 ask = row.get('ask', 0)
-                if bid > 0 and ask > 0:
-                    price = (bid + ask) / 2
-                else:
-                    price = row.get('lastPrice', 0)
+                price = (bid + ask) / 2
                 
                 if price > 0:
                     iv = calculate_implied_volatility(price, S, strike, t, r, flag, q)
@@ -3040,18 +2953,18 @@ def get_combined_intraday_data(ticker):
     if intraday_data.empty:
         return None, None, None
     
-    # Get VIX data if overlay is enabled
+    # Get VIXY data if overlay is enabled
     vix_data = None
     if st.session_state.show_vix_overlay:
         try:
-            vix = yf.Ticker('^VIX')
+            vix = yf.Ticker('VIXY')
             vix_intraday = vix.history(period="1d", interval="1m")
             if not vix_intraday.empty:
                 # Convert timezone to ET and filter for market hours
                 vix_intraday.index = vix_intraday.index.tz_convert(eastern)
                 vix_data = vix_intraday.between_time('09:30', '16:00')
                 
-                # Align VIX data with stock data timeframes
+                # Align VIXY data with stock data timeframes
                 if not intraday_data.empty and not vix_data.empty:
                     common_times = intraday_data.index.intersection(vix_data.index)
                     if len(common_times) > 0:
@@ -3060,7 +2973,7 @@ def get_combined_intraday_data(ticker):
                     else:
                         vix_data = None
         except Exception as e:
-            print(f"Error fetching VIX data: {e}")
+            print(f"Error fetching VIXY data: {e}")
             vix_data = None
     
     intraday_data = intraday_data.copy()
@@ -3129,10 +3042,7 @@ def create_iv_surface(calls_df, puts_df, current_price, selected_dates=None):
             
             bid = row.get('bid', 0)
             ask = row.get('ask', 0)
-            if bid > 0 and ask > 0:
-                price = (bid + ask) / 2
-            else:
-                price = row.get('lastPrice', 0)
+            price = (bid + ask) / 2
             
             if price <= 0: return None
             
@@ -3850,11 +3760,11 @@ def chart_settings():
             st.session_state.show_vix_overlay = False
         
         # Group VIX settings together
-        st.write("VIX Settings:")
-        st.checkbox("VIX Overlay", value=st.session_state.show_vix_overlay, key='show_vix_overlay')
+        st.write("VIXY Settings:")
+        st.checkbox("VIXY Overlay", value=st.session_state.show_vix_overlay, key='show_vix_overlay')
         
         if st.session_state.show_vix_overlay:
-            st.color_picker("VIX Color", st.session_state.vix_color, key='vix_color')
+            st.color_picker("VIXY Color", st.session_state.vix_color, key='vix_color')
 
         # Technical Indicators Settings
         st.write("Technical Indicators:")
@@ -4153,13 +4063,10 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     def get_valid_sigma(row, flag):
         # 1. Try Manual Calculation (Preferred: uses Mid Price)
         try:
-            # Use mid price if available, else last price
+            # Use Mid Price
             bid = row.get('bid', 0)
             ask = row.get('ask', 0)
-            if bid > 0 and ask > 0:
-                price = (bid + ask) / 2
-            else:
-                price = row.get('lastPrice', 0)
+            price = (bid + ask) / 2
                 
             if price > 0:
                 calculated_sigma = calculate_implied_volatility(price, S, row['strike'], t, r, flag, q)
@@ -4870,13 +4777,15 @@ def create_davi_chart(calls, puts, S, date_count=1):
 
     # Calculate DAVI for calls and puts with filtering
     # Only keep non-zero values
-    calls_df['DAVI'] = calls_metric * 100 * calls_df['lastPrice'].fillna(0) * calls_df['calc_delta'].fillna(0)
+    calls_mid_price = (calls_df['bid'].fillna(0) + calls_df['ask'].fillna(0)) / 2
+    calls_df['DAVI'] = calls_metric * 100 * calls_mid_price * calls_df['calc_delta'].fillna(0)
     calls_df = calls_df[calls_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     # Aggregate by strike to handle multiple expirations
     calls_df = calls_df.groupby('strike', as_index=False)['DAVI'].sum()
     calls_df['OptionType'] = 'Call'
 
-    puts_df['DAVI'] = puts_metric * 100 * puts_df['lastPrice'].fillna(0) * puts_df['calc_delta'].fillna(0)
+    puts_mid_price = (puts_df['bid'].fillna(0) + puts_df['ask'].fillna(0)) / 2
+    puts_df['DAVI'] = puts_metric * 100 * puts_mid_price * puts_df['calc_delta'].fillna(0)
     puts_df = puts_df[puts_df['DAVI'] != 0][['strike', 'DAVI']].copy()
     # Aggregate by strike to handle multiple expirations
     puts_df = puts_df.groupby('strike', as_index=False)['DAVI'].sum()
@@ -5203,9 +5112,32 @@ if st.session_state.current_page == "OI & Volume":
                     st.stop()
                 
                 # New: Add tabs to organize content
-                tab1, tab2, tab3, tab4, tab5 = st.tabs(["OI & Volume Charts", "Options Flow Analysis", "Premium Analysis", "Data Tables", "Market Maker"])
+                tab1, tab2, tab3, tab4 = st.tabs(["OI & Volume Charts", "Options Flow Analysis", "Premium Analysis", "Market Maker"])
                 
                 with tab1:
+                    # Calculate totals for header display
+                    total_call_oi = all_calls['openInterest'].sum()
+                    total_put_oi = all_puts['openInterest'].sum()
+                    total_call_vol = all_calls['volume'].sum()
+                    total_put_vol = all_puts['volume'].sum()
+                    
+                    # Display colorful metrics
+                    m1, m2, m3, m4 = st.columns(4)
+                    with m1:
+                        st.markdown(f"**Total Call OI**")
+                        st.markdown(f"<span style='color:{st.session_state.call_color}; font-size: 20px'>{format_large_number(total_call_oi)}</span>", unsafe_allow_html=True)
+                    with m2:
+                        st.markdown(f"**Total Put OI**")
+                        st.markdown(f"<span style='color:{st.session_state.put_color}; font-size: 20px'>{format_large_number(total_put_oi)}</span>", unsafe_allow_html=True)
+                    with m3:
+                        st.markdown(f"**Total Call Vol**")
+                        st.markdown(f"<span style='color:{st.session_state.call_color}; font-size: 20px'>{format_large_number(total_call_vol)}</span>", unsafe_allow_html=True)
+                    with m4:
+                        st.markdown(f"**Total Put Vol**")
+                        st.markdown(f"<span style='color:{st.session_state.put_color}; font-size: 20px'>{format_large_number(total_put_vol)}</span>", unsafe_allow_html=True)
+                        
+                    st.markdown("---")
+
                     # Original OI and Volume charts
                     oi_fig, volume_fig = create_oi_volume_charts(all_calls, all_puts, S, len(selected_expiry_dates))
                     st.plotly_chart(oi_fig, width='stretch')
@@ -5214,96 +5146,81 @@ if st.session_state.current_page == "OI & Volume":
                 with tab2:
                     # New: Options flow analysis and visualizations
                     flow_data = analyze_options_flow(all_calls, all_puts, S)
-                    flow_fig, money_fig, premium_fig, otm_fig = create_option_flow_charts(flow_data)
+                    # Note: create_option_flow_charts returns: fig_volume, fig_premium, fig_itm_otm_vol, fig_itm_otm_prem
+                    fig_volume_chart, fig_premium_chart, fig_itm_otm_vol, fig_itm_otm_prem = create_option_flow_charts(flow_data)
                     
-                    # Create two columns for flow metrics
+                    st.subheader("Options Flow Overview")
+                    
+                    col_metrics_1, col_metrics_2, col_metrics_3 = st.columns(3)
+                    with col_metrics_1:
+                         st.markdown(f"**Total Call Volume**")
+                         st.markdown(f"<span style='color:{st.session_state.call_color}; font-size: 20px'>{flow_data['calls']['volume']:,.0f}</span>", unsafe_allow_html=True)
+                         st.markdown(f"**Total Put Volume**")
+                         st.markdown(f"<span style='color:{st.session_state.put_color}; font-size: 20px'>{flow_data['puts']['volume']:,.0f}</span>", unsafe_allow_html=True)
+                    with col_metrics_2:
+                         st.markdown(f"**Total Call Premium**")
+                         st.markdown(f"<span style='color:{st.session_state.call_color}; font-size: 20px'>${flow_data['total_premium']['calls']:,.0f}</span>", unsafe_allow_html=True)
+                         st.markdown(f"**Total Put Premium**")
+                         st.markdown(f"<span style='color:{st.session_state.put_color}; font-size: 20px'>${flow_data['total_premium']['puts']:,.0f}</span>", unsafe_allow_html=True)
+                    with col_metrics_3:
+                        pcr_vol = flow_data['puts']['volume'] / max(flow_data['calls']['volume'], 1)
+                        pcr_prem = flow_data['total_premium']['puts'] / max(flow_data['total_premium']['calls'], 1)
+                        
+                        pcr_vol_color = st.session_state.call_color if pcr_vol < 1 else st.session_state.put_color if pcr_vol > 1 else 'white'
+                        pcr_prem_color = st.session_state.call_color if pcr_prem < 1 else st.session_state.put_color if pcr_prem > 1 else 'white'
+
+                        st.markdown(f"**Volume PCR**")
+                        st.markdown(f"<span style='color:{pcr_vol_color}; font-size: 20px'>{pcr_vol:.2f}</span>", unsafe_allow_html=True)
+                        st.markdown(f"**Premium PCR**")
+                        st.markdown(f"<span style='color:{pcr_prem_color}; font-size: 20px'>{pcr_prem:.2f}</span>", unsafe_allow_html=True)
+
+                    # Create two columns for charts
                     flow_col1, flow_col2 = st.columns(2)
                     
                     with flow_col1:
-                        # Show bought vs sold volume
-                        st.plotly_chart(flow_fig, width='stretch')
-                        
-                        # Show OTM vs ITM volume
-                        st.plotly_chart(money_fig, width='stretch')
+                        st.plotly_chart(fig_volume_chart, width='stretch')
+                        st.plotly_chart(fig_itm_otm_vol, width='stretch')
                     
                     with flow_col2:
-                        # Show premium distribution
-                        st.plotly_chart(premium_fig, width='stretch')
-                        
-                        # Show OTM analysis
-                        st.plotly_chart(otm_fig, width='stretch')
+                        st.plotly_chart(fig_premium_chart, width='stretch')
+                        st.plotly_chart(fig_itm_otm_prem, width='stretch')
                     
                     # Summary metrics display
-                    st.subheader("Options Flow Summary")
+                    st.subheader("Flow Detail Summary")
                     
-                    # Create a styled DataFrame for summary stats
                     summary_data = {
                         'Metric': [
-                            'Total Call Premium', 'Total Put Premium',
-                            'Call Volume', 'Put Volume',
-                            'OTM Calls Bought', 'OTM Calls Sold',
-                            'OTM Puts Bought', 'OTM Puts Sold'
+                            'Total Premium', 'Volume', 'ITM Volume', 'OTM Volume', 'ITM Premium', 'OTM Premium'
                         ],
-                        'Value': [
+                        'Calls': [
                             f"${flow_data['total_premium']['calls']:,.0f}",
-                            f"${flow_data['total_premium']['puts']:,.0f}",
-                            f"{flow_data['calls']['bought']['volume'] + flow_data['calls']['sold']['volume']:,.0f}",
-                            f"{flow_data['puts']['bought']['volume'] + flow_data['puts']['sold']['volume']:,.0f}",
-                            f"{flow_data['otm_detail']['calls_bought']:,.0f}",
-                            f"{flow_data['otm_detail']['calls_sold']:,.0f}",
-                            f"{flow_data['otm_detail']['puts_bought']:,.0f}",
-                            f"{flow_data['otm_detail']['puts_sold']:,.0f}"
+                            f"{flow_data['calls']['volume']:,.0f}",
+                            f"{flow_data['calls']['ITM']['volume']:,.0f}",
+                            f"{flow_data['calls']['OTM']['volume']:,.0f}",
+                            f"${flow_data['calls']['ITM']['premium']:,.0f}",
+                            f"${flow_data['calls']['OTM']['premium']:,.0f}"
                         ],
-                        'Type': [
-                            'Call', 'Put',
-                            'Call', 'Put',
-                            'Call', 'Call',
-                            'Put', 'Put'
+                        'Puts': [
+                            f"${flow_data['total_premium']['puts']:,.0f}",
+                            f"{flow_data['puts']['volume']:,.0f}",
+                            f"{flow_data['puts']['ITM']['volume']:,.0f}",
+                            f"{flow_data['puts']['OTM']['volume']:,.0f}",
+                            f"${flow_data['puts']['ITM']['premium']:,.0f}",
+                            f"${flow_data['puts']['OTM']['premium']:,.0f}"
                         ]
                     }
                     
                     summary_df = pd.DataFrame(summary_data)
                     
-                    # Apply styling with conditional formatting
-                    def color_type(val):
-                        color = st.session_state.call_color if val == 'Call' else st.session_state.put_color
-                        return f'color: {color}'
-
-                    # Display the table with styling
+                    # Apply coloring to the dataframe
                     st.dataframe(
-                        summary_df.style.map(lambda val: f'color: {st.session_state.call_color if val == "Call" else st.session_state.put_color}', subset=['Type']),
-                        hide_index=True,
+                        summary_df.style.map(
+                            lambda x: f'color: {st.session_state.call_color}; font-weight: bold', subset=['Calls']
+                        ).map(
+                            lambda x: f'color: {st.session_state.put_color}; font-weight: bold', subset=['Puts']
+                        ), 
+                        hide_index=True, 
                         width='stretch'
-                    )
-                    # Calculate and display put/call ratio
-                    put_call_ratio = flow_data['puts']['bought']['volume'] / max(flow_data['calls']['bought']['volume'], 1)
-                    
-                    # Format the ratio as a string with 2 decimal places
-                    ratio_str = f"{put_call_ratio:.2f}"
-                    
-                    # Determine background color based on ratio value
-                    if put_call_ratio > 1.5:
-                        bgcolor = "rgba(255, 0, 0, 0.2)"  # Red background for high put/call ratio
-                    elif put_call_ratio < 0.7:
-                        bgcolor = "rgba(0, 255, 0, 0.2)"  # Green background for low put/call ratio
-                    else:
-                        bgcolor = "rgba(255, 255, 255, 0.1)"  # Neutral background
-                    
-                    # Display put/call ratio in a styled container
-                    st.markdown(
-                        f"""
-                        <div style="background-color: {bgcolor}; padding: 10px; border-radius: 5px; margin-bottom: 10px;">
-                            <h3 style="margin: 0;">Put/Call Volume Ratio: {ratio_str}</h3>
-                            <p style="margin: 5px 0 0 0; font-size: 0.8em;">
-                                {
-                                    "Elevated put buying - possible bearish sentiment" if put_call_ratio > 1.5 else
-                                    "More call buying than put buying - possible bullish sentiment" if put_call_ratio < 0.7 else
-                                    "Neutral put/call ratio"
-                                }
-                            </p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True
                     )
                 
                 with tab3:
@@ -5312,8 +5229,12 @@ if st.session_state.current_page == "OI & Volume":
                     
                     
                     # Premium summary statistics
-                    total_call_premium = (all_calls['volume'] * all_calls['lastPrice'] * 100).sum()
-                    total_put_premium = (all_puts['volume'] * all_puts['lastPrice'] * 100).sum()
+                    # Calculate Mid Price for better accuracy
+                    all_calls['midPrice'] = (all_calls['bid'].fillna(0) + all_calls['ask'].fillna(0)) / 2
+                    all_puts['midPrice'] = (all_puts['bid'].fillna(0) + all_puts['ask'].fillna(0)) / 2
+
+                    total_call_premium = (all_calls['volume'] * all_calls['midPrice'] * 100).sum()
+                    total_put_premium = (all_puts['volume'] * all_puts['midPrice'] * 100).sum()
                     premium_ratio = total_call_premium / max(total_put_premium, 1)  # Avoid division by zero
                     
                     # Premium by moneyness
@@ -5321,13 +5242,13 @@ if st.session_state.current_page == "OI & Volume":
                     all_puts['moneyness'] = all_puts.apply(lambda x: 'ITM' if x['strike'] >= S else 'OTM', axis=1)
                     
                     otm_call_premium = (all_calls[all_calls['moneyness'] == 'OTM']['volume'] * 
-                                    all_calls[all_calls['moneyness'] == 'OTM']['lastPrice'] * 100).sum()
+                                    all_calls[all_calls['moneyness'] == 'OTM']['midPrice'] * 100).sum()
                     itm_call_premium = (all_calls[all_calls['moneyness'] == 'ITM']['volume'] * 
-                                    all_calls[all_calls['moneyness'] == 'ITM']['lastPrice'] * 100).sum()
+                                    all_calls[all_calls['moneyness'] == 'ITM']['midPrice'] * 100).sum()
                     otm_put_premium = (all_puts[all_puts['moneyness'] == 'OTM']['volume'] * 
-                                    all_puts[all_puts['moneyness'] == 'OTM']['lastPrice'] * 100).sum()
+                                    all_puts[all_puts['moneyness'] == 'OTM']['midPrice'] * 100).sum()
                     itm_put_premium = (all_puts[all_puts['moneyness'] == 'ITM']['volume'] * 
-                                    all_puts[all_puts['moneyness'] == 'ITM']['lastPrice'] * 100).sum()
+                                    all_puts[all_puts['moneyness'] == 'ITM']['midPrice'] * 100).sum()
                     
                     # Calculate ITM premium flow
                     itm_net_premium = itm_call_premium - itm_put_premium
@@ -5471,11 +5392,11 @@ if st.session_state.current_page == "OI & Volume":
                     # Create strike-based premium insights - Fix for deprecation warning
                     # Instead of using groupby().apply(), calculate premium directly
                     calls_premium = all_calls.copy()
-                    calls_premium['premium'] = calls_premium['volume'] * calls_premium['lastPrice'] * 100
+                    calls_premium['premium'] = calls_premium['volume'] * calls_premium['midPrice'] * 100
                     call_premium_by_strike = calls_premium.groupby('strike')['premium'].sum().reset_index()
                     
                     puts_premium = all_puts.copy()
-                    puts_premium['premium'] = puts_premium['volume'] * puts_premium['lastPrice'] * 100
+                    puts_premium['premium'] = puts_premium['volume'] * puts_premium['midPrice'] * 100
                     put_premium_by_strike = puts_premium.groupby('strike')['premium'].sum().reset_index()
                     
                     # Find top premium concentrations
@@ -5548,30 +5469,6 @@ if st.session_state.current_page == "OI & Volume":
                         st.table(pd.DataFrame(bearish_data))
 
                 with tab4:
-                    # Original data tables
-                    volume_over_oi = st.checkbox("Show only rows where Volume > Open Interest")
-                    # Filter data based on volume over OI if checked
-                    calls_filtered = all_calls.copy()
-                    puts_filtered = all_puts.copy()
-                    if volume_over_oi:
-                        calls_filtered = calls_filtered[calls_filtered['volume'] > calls_filtered['openInterest']]
-                        puts_filtered = puts_filtered[puts_filtered['volume'] > puts_filtered['openInterest']]
-                    if calls_filtered.empty and puts_filtered.empty:
-                        st.warning("No data left after applying filters.")
-                    else:
-                        st.write("### Filtered Data Tables")
-                        if not calls_filtered.empty:
-                            st.write("**Calls Table**")
-                            st.dataframe(calls_filtered)
-                        else:
-                            st.write("No calls match filters.")
-                        if not puts_filtered.empty:
-                            st.write("**Puts Table**")
-                            st.dataframe(puts_filtered)
-                        else:
-                            st.write("No puts match filters.")
-                
-                with tab5:
                     # Market Maker tab content
                     st.write("### 📊 Market Maker Positioning")
                     st.write(f"**Symbol:** {ticker.upper()} | **Expiry:** {', '.join(selected_expiry_dates)}")
@@ -6358,48 +6255,30 @@ elif st.session_state.current_page == "Dashboard":
                         y_min = price_min - padding
                         y_max = price_max + padding
 
-                        # Add VIX overlay if enabled
+                        # Add VIXY overlay if enabled
                         if st.session_state.show_vix_overlay and vix_data is not None and not vix_data.empty:
-                            vix_min = vix_data['Close'].min()
-                            vix_max = vix_data['Close'].max()
-                            vix_range = vix_max - vix_min
-
-                            if vix_range == 0:
-                                st.warning("VIX data has no range, overlay disabled")
-                            else:
-                                # Normalize VIX to fit within 50% of price range, centered
-                                target_vix_range = price_range * 0.5
-                                vix_midpoint = (price_max + price_min) / 2
-                                normalized_vix = vix_midpoint + (((vix_data['Close'] - vix_min) / vix_range - 0.5) * target_vix_range)
-
-
-                                fig_intraday.add_trace(
-                                    go.Scatter(
-                                        x=vix_data.index,
-                                        y=normalized_vix,
-                                        name='VIX',
-                                        line=dict(color=st.session_state.vix_color, width=2),
-                                        opacity=0.9,
-                                        showlegend=False
-                                    ),
-                                    secondary_y=False
-                                )
-
-                                fig_intraday.add_annotation(
-                                    x=vix_data.index[-1],
-                                    y=normalized_vix.iloc[-1],
-                                    text=f"{vix_data['Close'].iloc[-1]:.2f}",
-                                    showarrow=False,
-                                    xshift=16,
-                                    font=dict(color=st.session_state.vix_color, size=st.session_state.chart_text_size)
-                                )
-
-                                # Adjust y-axis to include VIX
-                                y_min = min(y_min, normalized_vix.min() - padding)
-                                y_max = max(y_max, normalized_vix.max() + padding)
+                            fig_intraday.add_trace(
+                                go.Scatter(
+                                    x=vix_data.index,
+                                    y=vix_data['Close'],
+                                    name='VIXY',
+                                    line=dict(color=st.session_state.vix_color, width=2),
+                                    opacity=0.9,
+                                    showlegend=True
+                                ),
+                                secondary_y=True
+                            )
+                            
+                            fig_intraday.update_yaxes(
+                                title_text="VIXY", 
+                                title_font=dict(color=st.session_state.vix_color),
+                                tickfont=dict(color=st.session_state.vix_color),
+                                secondary_y=True,
+                                showgrid=False
+                            )
 
                         elif st.session_state.show_vix_overlay:
-                            st.warning("VIX overlay enabled but no VIX data available")
+                            st.warning("VIXY overlay enabled but no VIXY data available")
 
                         # Price annotation
                         if current_price is not None:
@@ -6529,8 +6408,10 @@ elif st.session_state.current_page == "Dashboard":
                             atm_put = puts[puts['strike'] == atm_strike]
                             
                             if not atm_call.empty and not atm_put.empty:
-                                call_price = atm_call.iloc[0]['lastPrice']
-                                put_price = atm_put.iloc[0]['lastPrice']
+                                call_row = atm_call.iloc[0]
+                                put_row = atm_put.iloc[0]
+                                call_price = (call_row.get('bid', 0) + call_row.get('ask', 0)) / 2
+                                put_price = (put_row.get('bid', 0) + put_row.get('ask', 0)) / 2
                                 straddle_price = call_price + put_price
                                 
                                 upper_breakeven = atm_strike + straddle_price
