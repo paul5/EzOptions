@@ -4685,7 +4685,92 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
             height=600  # Increase chart height for better visibility
         )
 
-    fig = add_current_price_line(fig, S)
+    # Logic to fix visual gaps by using categorical axis while maintaining current price line
+    # Calculate all strikes present in the chart data (filtered by strike range)
+    present_strikes = sorted(list(set(calls_df['strike']) | set(puts_df['strike']) | set(net_exposure.index if not net_exposure.empty else [])))
+    
+    if present_strikes:
+        # Calculate nice ticks to emulate linear axis labeling
+        tick_vals = present_strikes
+        if len(present_strikes) > 15:
+            try:
+                min_s, max_s = min(present_strikes), max(present_strikes)
+                # Target around 10 ticks (adjusted for chart width/height)
+                target_ticks = 10
+                raw_step = (max_s - min_s) / target_ticks
+                # Find nearest nice step (1, 2, 5, 10, etc)
+                mag = 10 ** math.floor(math.log10(raw_step)) if raw_step > 0 else 1
+                residual = raw_step / mag
+                if residual >= 5: nice_step = 5 * mag
+                elif residual >= 2: nice_step = 2 * mag
+                else: nice_step = mag
+                
+                nice_ticks = []
+                # Start from a clean multiple
+                curr = math.ceil(min_s / nice_step) * nice_step
+                while curr <= max_s + (nice_step * 0.1): # Add small buffer for float comparison
+                    # Find closest strike in data to this nice number
+                    # We only show a tick if there is a strike reasonably close to the nice number
+                    closest = min(present_strikes, key=lambda x: abs(x - curr))
+                    # Only add if it's unique and reasonably close (within 50% of step)
+                    if closest not in nice_ticks and abs(closest - curr) < nice_step * 0.5:
+                        nice_ticks.append(closest)
+                    curr += nice_step
+                tick_vals = sorted(nice_ticks)
+            except Exception:
+                tick_vals = present_strikes # Fallback
+
+        # Interpolate S position among present strikes
+        spot_pos = 0
+        if S <= present_strikes[0]:
+            spot_pos = -0.5
+        elif S >= present_strikes[-1]:
+            spot_pos = len(present_strikes) - 0.5
+        else:
+            for i in range(len(present_strikes)-1):
+                if present_strikes[i] <= S <= present_strikes[i+1]:
+                    ratio = (S - present_strikes[i]) / (present_strikes[i+1] - present_strikes[i])
+                    spot_pos = i + ratio
+                    break
+        
+        # Apply categorical axis and add price line based on calculated position
+        if st.session_state.chart_type == 'Horizontal Bar':
+            fig.update_layout(yaxis=dict(
+                type='category', 
+                categoryorder='array', 
+                categoryarray=present_strikes,
+                tickmode='array',
+                tickvals=tick_vals
+            ))
+            fig.add_hline(
+                y=spot_pos,
+                line_dash="dash",
+                line_color="white",
+                opacity=0.7
+            )
+        else:
+            fig.update_layout(xaxis=dict(
+                type='category', 
+                categoryorder='array', 
+                categoryarray=present_strikes,
+                tickmode='array',
+                tickvals=tick_vals
+            ))
+            fig.add_vline(
+                x=spot_pos,
+                line_dash="dash",
+                line_color="white",
+                opacity=0.7,
+                annotation_text=f"{S}",
+                annotation_position="top",
+                annotation=dict(
+                    font=dict(size=st.session_state.chart_text_size)
+                )
+            )
+    else:
+        # Fallback for empty data
+        fig = add_current_price_line(fig, S)
+
     return fig
 
 def calculate_max_pain(calls, puts):
