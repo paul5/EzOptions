@@ -2484,6 +2484,35 @@ def calculate_vomma(flag, S, K, t, sigma, r=None, q=0):
         st.error(f"Error calculating vomma: {e}")
         return None
 
+def calculate_color(flag, S, K, t, sigma, r=None, q=0):
+    """
+    Calculate Color (dGamma/dTime) for an option.
+    Color measures the rate of change of Gamma over time.
+    """
+    try:
+        t = max(t, 1e-5)
+        if r is None:
+            r = st.session_state.risk_free_rate
+
+        d1 = (np.log(S / K) + (r - q + 0.5 * sigma**2) * t) / (sigma * np.sqrt(t))
+        d2 = d1 - sigma * np.sqrt(t)
+
+        norm_d1 = norm.pdf(d1)
+        
+        # Color Calculation
+        term1 = 2 * (r - q) * t
+        term2 = d2 * sigma * np.sqrt(t)
+        
+        # Using a standard formula for Color
+        # Color = -exp(-qt) * [N'(d1) / (2*S*t*sigma*sqrt(t))] * [1 + (2(r-q)t - d2*sigma*sqrt(t)) * d1 / (2*t*sigma*sqrt(t))]
+        # Simplified:
+        color = -np.exp(-q*t) * (norm_d1 / (2 * S * t * sigma * np.sqrt(t))) * \
+                (1 + (term1 - term2) * d1 / (2 * t * sigma * np.sqrt(t)))
+        
+        return color
+    except Exception as e:
+        return None
+
 def calculate_implied_move(S, calls_df, puts_df):
     """Calculate implied move based on straddle prices."""
     try:
@@ -3211,6 +3240,7 @@ def reset_session_state():
         'charm_expiry_multi',
         'speed_expiry_multi',
         'vomma_expiry_multi',
+        'color_expiry_multi',
         'max_pain_expiry_multi',
         'exposure_heatmap_expiry_multi'
     ]
@@ -3639,6 +3669,7 @@ page_icons = {
     "Charm Exposure": "⚡",
     "Speed Exposure": "🚀",
     "Vomma Exposure": "💫",
+    "Color Exposure": "🌈",
     "Delta-Adjusted Value Index": "📉",
     "Max Pain": "🎯",
     "Exposure Heatmap": "🔥",
@@ -3649,7 +3680,7 @@ page_icons = {
 }
 
 pages = ["Dashboard", "OI & Volume", "Gamma Exposure", "Delta Exposure", 
-          "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Delta-Adjusted Value Index", "Max Pain", "Exposure Heatmap", "GEX Surface", "IV Surface",
+          "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Color Exposure", "Delta-Adjusted Value Index", "Max Pain", "Exposure Heatmap", "GEX Surface", "IV Surface",
           "Implied Probabilities", "Analysis"]
 
 # Create page options with icons
@@ -3678,6 +3709,7 @@ if st.session_state.previous_page != new_page:
         'charm_expiry_multi',
         'speed_expiry_multi',
         'vomma_expiry_multi',
+        'color_expiry_multi',
         'exposure_heatmap_expiry_multi',
         'implied_probabilities_expiry_multi'
     ]
@@ -3940,7 +3972,7 @@ def chart_settings():
             st.session_state.show_straddle = False  # Default to not showing Straddle
 
         # Exposure levels multiselect
-        exposure_options = ['GEX', 'DEX', 'VEX', 'Charm', 'Speed', 'Vomma']
+        exposure_options = ['GEX', 'DEX', 'VEX', 'Charm', 'Speed', 'Vomma', 'Color']
         st.multiselect(
             "Show Levels for:",
             options=exposure_options,
@@ -4085,22 +4117,23 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
             
         return None
 
-    # Compute Greeks for Gamma, Vanna, Delta, Charm, Speed, and Vomma
+    # Compute Greeks for Gamma, Vanna, Delta, Charm, Speed, Vomma and Color
     def compute_all_greeks(row, flag):
         sigma = get_valid_sigma(row, flag)
         if sigma is None:
-            return pd.Series([None] * 6)
+            return pd.Series([None] * 7)
         try:
             delta_val, gamma_val, vanna_val = calculate_greeks(flag, S, row["strike"], t, sigma, r, q)
             charm_val = calculate_charm(flag, S, row["strike"], t, sigma, r, q)
             speed_val = calculate_speed(flag, S, row["strike"], t, sigma, r, q)
             vomma_val = calculate_vomma(flag, S, row["strike"], t, sigma, r, q)
+            color_val = calculate_color(flag, S, row["strike"], t, sigma, r, q)
             
-            return pd.Series([gamma_val, vanna_val, delta_val, charm_val, speed_val, vomma_val])
+            return pd.Series([gamma_val, vanna_val, delta_val, charm_val, speed_val, vomma_val, color_val])
         except Exception:
-            return pd.Series([None] * 6)
+            return pd.Series([None] * 7)
 
-    greek_columns = ["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"]
+    greek_columns = ["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma", "calc_color"]
 
     if not calls.empty:
         calls[greek_columns] = calls.apply(lambda row: compute_all_greeks(row, "c"), axis=1)
@@ -4108,8 +4141,8 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     if not puts.empty:
         puts[greek_columns] = puts.apply(lambda row: compute_all_greeks(row, "p"), axis=1)
 
-    calls = calls.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"])
-    puts = puts.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma"])
+    calls = calls.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma", "calc_color"])
+    puts = puts.dropna(subset=["calc_gamma", "calc_vanna", "calc_delta", "calc_charm", "calc_speed", "calc_vomma", "calc_color"])
 
     # Determine which metric to use based on settings
     metric_type = st.session_state.get('exposure_metric', 'Open Interest')
@@ -4153,6 +4186,13 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     calls["Vomma"] = calls["calc_vomma"] * calls_metric * 100 * 0.01
     puts["Vomma"] = puts["calc_vomma"] * puts_metric * 100 * 0.01
 
+    # Color = Color * Metric * Contract Size * Spot Price^2 * 0.01 / 365 (Dollar Color per 1% move per 1 day decay)
+    # Color is dGamma/dt. GEX is Dollar Gamma. So Color Exposure is d(GEX)/dt.
+    # GEX = Gamma * Metric * 100 * S * Spot * 0.01.
+    # So d(GEX)/dt = Color * Metric * 100 * S * Spot * 0.01 / 365.
+    calls["Color"] = calls["calc_color"] * calls_metric * 100 * S * spot_multiplier * 0.01 / 365.0
+    puts["Color"] = puts["calc_color"] * puts_metric * 100 * S * spot_multiplier * 0.01 / 365.0
+
     # Apply delta adjustment if enabled
     if st.session_state.get('delta_adjusted_exposures', False):
         # Multiply all exposures (except DEX which is already delta-based) by delta (probability)
@@ -4171,6 +4211,9 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
         
         calls["Vomma"] = calls["Vomma"] * calls["calc_delta"].abs()
         puts["Vomma"] = puts["Vomma"] * puts["calc_delta"].abs()
+
+        calls["Color"] = calls["Color"] * calls["calc_delta"].abs()
+        puts["Color"] = puts["Color"] * puts["calc_delta"].abs()
 
     return calls, puts, S, t, selected_expiry, today
 
@@ -6093,6 +6136,71 @@ elif st.session_state.current_page == "Vomma Exposure":
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
                 st.plotly_chart(fig_bar, width='stretch')
 
+elif st.session_state.current_page == "Color Exposure":
+    with main_placeholder.container():
+        page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, vomma, or color
+        col1, col2 = st.columns([0.94, 0.06])
+        with col1:
+            user_ticker = st.text_input("Enter Stock Ticker (e.g., SPY, TSLA, SPX, NDX):", saved_ticker, key=f"{page_name}_exposure_ticker")
+        with col2:
+            st.write("")  # Add some spacing
+            st.write("")  # Add some spacing
+            if st.button("🔄", key=f"refresh_button_{page_name}"):
+                st.cache_data.clear()  # Clear the cache before rerunning
+                st.rerun()
+        ticker = format_ticker(user_ticker)
+        
+        # Clear cache if ticker changes
+        if ticker != saved_ticker:
+            st.cache_data.clear()
+            save_ticker(ticker)  # Save the ticker
+        
+        if ticker:
+            # Fetch price once
+            S = get_current_price(ticker)
+            if S is None:
+                st.error("Could not fetch current price.")
+                st.stop()
+
+            stock = get_ticker_object(ticker)
+            available_dates = stock.options
+            if not available_dates:
+                st.warning("No options data available for this ticker.")
+            else:
+                selected_expiry_dates, selector_container = expiry_selector_fragment(st.session_state.current_page, available_dates)
+                st.session_state.expiry_selector_container = selector_container
+                
+                if not selected_expiry_dates:
+                    st.warning("Please select at least one expiration date.")
+                    st.stop()
+                
+                all_calls, all_puts = fetch_and_process_multiple_dates(
+                    ticker, 
+                    selected_expiry_dates,
+                    lambda t, d: compute_greeks_and_charts(t, d, page_name, S)[:2]  # Only take calls and puts
+                )
+                
+                if all_calls.empty and all_puts.empty:
+                    st.warning("No options data available for the selected dates.")
+                    st.stop()
+                
+                exposure_type_map = {
+                    "Gamma Exposure": "GEX",
+                    "Vanna Exposure": "VEX",
+                    "Delta Exposure": "DEX",
+                    "Charm Exposure": "Charm",
+                    "Speed Exposure": "Speed",
+                    "Vomma Exposure": "Vomma",
+                    "Color Exposure": "Color"
+                }
+                
+                exposure_type = exposure_type_map[st.session_state.current_page]
+                
+                # Modify the bar chart title to show multiple dates
+                title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
+                fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
+                st.plotly_chart(fig_bar, width='stretch')
+
 elif st.session_state.current_page == "Dashboard":
     with main_placeholder.container():
         # Create a single input for ticker with refresh button
@@ -6158,6 +6266,7 @@ elif st.session_state.current_page == "Dashboard":
                     fig_charm = create_exposure_bar_chart(calls, puts, "Charm", f"Charm Exposure by Strike{date_suffix}", S)
                     fig_speed = create_exposure_bar_chart(calls, puts, "Speed", f"Speed Exposure by Strike{date_suffix}", S)
                     fig_vomma = create_exposure_bar_chart(calls, puts, "Vomma", f"Vomma Exposure by Strike{date_suffix}", S)
+                    fig_color = create_exposure_bar_chart(calls, puts, "Color", f"Color Exposure by Strike{date_suffix}", S)
                     
                     # Intraday price chart
                     intraday_data, current_price, vix_data = get_combined_intraday_data(ticker)
@@ -6531,7 +6640,7 @@ elif st.session_state.current_page == "Dashboard":
                     
                     chart_options = [
                         "Intraday Price", "Gamma Exposure", "Vanna Exposure", "Delta Exposure",
-                        "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Volume Ratio",
+                        "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Color Exposure", "Volume Ratio",
                         "Max Pain", "Delta-Adjusted Value Index", "Volume by Strike"
                     ]
                     default_charts = ["Intraday Price", "Gamma Exposure", "Vanna Exposure", "Delta Exposure", "Charm Exposure"]
@@ -6665,6 +6774,7 @@ elif st.session_state.current_page == "Dashboard":
                         ("Gamma Exposure", fig_gamma), ("Delta Exposure", fig_delta),
                         ("Vanna Exposure", fig_vanna), ("Charm Exposure", fig_charm),
                         ("Speed Exposure", fig_speed), ("Vomma Exposure", fig_vomma),
+                        ("Color Exposure", fig_color),
                         ("Volume Ratio", fig_volume_ratio), ("Max Pain", create_max_pain_chart(calls, puts, S, len(selected_expiry_dates))),
                         ("Delta-Adjusted Value Index", create_davi_chart(calls, puts, S, len(selected_expiry_dates))),
                         ("Volume by Strike", create_volume_by_strike_chart(calls, puts, S, len(selected_expiry_dates)))
@@ -7644,7 +7754,8 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     "Vanna Exposure (VEX)": "VEX",
                     "Charm Exposure": "Charm",
                     "Speed Exposure": "Speed",
-                    "Vomma Exposure": "Vomma"
+                    "Vomma Exposure": "Vomma",
+                    "Color Exposure": "Color"
                 }
                 
                 # Initialize saved exposure type if not present
