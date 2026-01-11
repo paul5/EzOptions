@@ -3965,6 +3965,20 @@ def chart_settings():
             key='gex_type'
         )
 
+        # Add opacity setting for Absolute Gamma Background
+        if 'abs_gex_opacity' not in st.session_state:
+            st.session_state.abs_gex_opacity = 0.0  # Default 0 (hidden)
+            
+        st.slider(
+            "Absolute Gamma Background Opacity",
+            min_value=0.0,
+            max_value=1.0,
+            value=st.session_state.abs_gex_opacity,
+            step=0.05,
+            key='abs_gex_opacity',
+            help="Opacity of the absolute gamma exposure area chart in the background"
+        )
+
         # Add intraday chart level settings
         st.write("Intraday Chart Levels:")
         
@@ -4434,6 +4448,41 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     )
 
     fig = go.Figure()
+
+    # Add Absolute Gamma background if enabled (GEX only)
+    if exposure_type in ['GEX', 'GEX_notional'] and st.session_state.get('abs_gex_opacity', 0) > 0:
+        calls_abs = calls_filtered.groupby('strike')[exposure_type].sum().abs()
+        puts_abs = puts_filtered.groupby('strike')[exposure_type].sum().abs()
+        total_abs_gex = calls_abs.add(puts_abs, fill_value=0)
+        
+        opacity = st.session_state.abs_gex_opacity
+        fill_color = f'rgba(128, 128, 128, {opacity})'
+        
+        if st.session_state.chart_type == 'Horizontal Bar':
+            fig.add_trace(go.Scatter(
+                y=total_abs_gex.index,
+                x=total_abs_gex.values,
+                mode='lines',
+                fill='tozerox',
+                name='Abs Gamma',
+                line=dict(color='rgba(255, 255, 255, 0)', width=0),
+                fillcolor=fill_color,
+                hoverinfo='skip',
+                orientation='h',
+                showlegend=False
+            ))
+        else:
+             fig.add_trace(go.Scatter(
+                x=total_abs_gex.index,
+                y=total_abs_gex.values,
+                mode='lines',
+                fill='tozeroy',
+                name='Abs Gamma',
+                line=dict(color='rgba(255, 255, 255, 0)', width=0),
+                fillcolor=fill_color,
+                hoverinfo='skip',
+                showlegend=False
+            ))
 
     # Add calls if enabled
     if (st.session_state.show_calls):
