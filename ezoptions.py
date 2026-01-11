@@ -4401,11 +4401,8 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
         else:  # Absolute
             calls_gex = calls_filtered.groupby('strike')[exposure_type].sum()
             puts_gex = puts_filtered.groupby('strike')[exposure_type].sum()
-            net_exposure = pd.Series(index=set(calls_gex.index) | set(puts_gex.index))
-            for strike in net_exposure.index:
-                call_val = abs(calls_gex.get(strike, 0))
-                put_val = abs(puts_gex.get(strike, 0))
-                net_exposure[strike] = call_val if call_val >= put_val else -put_val
+            # Calculate total absolute gamma exposure (Call + Put magnitudes)
+            net_exposure = calls_gex.abs().add(puts_gex.abs(), fill_value=0)
     elif exposure_type == 'DEX':
         net_exposure = calls_filtered.groupby('strike')[exposure_type].sum().add(puts_filtered.groupby('strike')[exposure_type].sum(), fill_value=0)
     else:  # VEX, Charm, Speed, Vomma
@@ -6717,14 +6714,10 @@ elif st.session_state.current_page == "Dashboard":
                             
                             # Calculate Net or Absolute Exposure
                             if exposure_type == 'GEX' and st.session_state.gex_type == 'Absolute':
-                                # Absolute GEX: Take the larger absolute value at each strike
+                                # Absolute GEX: Sum of absolute values
                                 calls_exp = calls_filtered.groupby('strike')[exposure_type].sum()
                                 puts_exp = puts_filtered.groupby('strike')[exposure_type].sum()
-                                net_exp = pd.Series(index=set(calls_exp.index) | set(puts_exp.index))
-                                for strike in net_exp.index:
-                                    call_val = abs(calls_exp.get(strike, 0))
-                                    put_val = abs(puts_exp.get(strike, 0))
-                                    net_exp[strike] = call_val if call_val >= put_val else -put_val
+                                net_exp = calls_exp.abs().add(puts_exp.abs(), fill_value=0)
                             elif exposure_type == 'GEX':
                                 # Net GEX: Calls positive, Puts negative
                                 net_exp = calls_filtered.groupby('strike')[exposure_type].sum().sub(puts_filtered.groupby('strike')[exposure_type].sum(), fill_value=0)
