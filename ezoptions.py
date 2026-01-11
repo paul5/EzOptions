@@ -8077,13 +8077,23 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     if val is not None:
                         st.session_state.saved_exposure_heatmap_type = val
 
-                selected_exposure_name = st.selectbox(
-                    "Select Exposure Type:",
-                    options=list(exposure_types.keys()),
-                    index=default_index,
-                    key="exposure_heatmap_type",
-                    on_change=update_exposure_type
-                )
+                col_type, col_norm = st.columns(2)
+                with col_type:
+                    selected_exposure_name = st.selectbox(
+                        "Select Exposure Type:",
+                        options=list(exposure_types.keys()),
+                        index=default_index,
+                        key="exposure_heatmap_type",
+                        on_change=update_exposure_type
+                    )
+
+                with col_norm:
+                    normalization_method = st.selectbox(
+                        "Normalization Method:",
+                        options=["Per Expiration", "Global"],
+                        index=0,
+                        key="heatmap_normalization"
+                    )
                 
                 exposure_type = exposure_types[selected_exposure_name]
                 
@@ -8193,28 +8203,43 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 # Ensure no NaNs in net exposure
                 net_exposure = np.nan_to_num(net_exposure)
                 
-                # Normalize matrices per column (expiration) for coloring
+                # Normalize matrices for coloring
                 call_exposure_norm = np.zeros_like(call_exposure)
                 put_exposure_norm = np.zeros_like(put_exposure)
                 net_exposure_norm = np.zeros_like(net_exposure)
                 
-                # Normalize Call Exposure
-                for col in range(call_exposure.shape[1]):
-                    max_val = np.nanmax(call_exposure[:, col])
-                    if max_val > 0:
-                        call_exposure_norm[:, col] = call_exposure[:, col] / max_val
+                if normalization_method == "Global":
+                    # Global Normalization
+                    max_call = np.nanmax(call_exposure)
+                    if max_call > 0:
+                        call_exposure_norm = call_exposure / max_call
                         
-                # Normalize Put Exposure
-                for col in range(put_exposure.shape[1]):
-                    max_val = np.nanmax(put_exposure[:, col])
-                    if max_val > 0:
-                        put_exposure_norm[:, col] = put_exposure[:, col] / max_val
+                    max_put = np.nanmax(put_exposure)
+                    if max_put > 0:
+                        put_exposure_norm = put_exposure / max_put
+                        
+                    max_net_abs = np.nanmax(np.abs(net_exposure))
+                    if max_net_abs > 0:
+                        net_exposure_norm = net_exposure / max_net_abs
+                else:
+                    # Per Expiration Normalization (Default)
+                    # Normalize Call Exposure
+                    for col in range(call_exposure.shape[1]):
+                        max_val = np.nanmax(call_exposure[:, col])
+                        if max_val > 0:
+                            call_exposure_norm[:, col] = call_exposure[:, col] / max_val
+                            
+                    # Normalize Put Exposure
+                    for col in range(put_exposure.shape[1]):
+                        max_val = np.nanmax(put_exposure[:, col])
+                        if max_val > 0:
+                            put_exposure_norm[:, col] = put_exposure[:, col] / max_val
 
-                # Normalize Net Exposure
-                for col in range(net_exposure.shape[1]):
-                    max_abs = np.nanmax(np.abs(net_exposure[:, col]))
-                    if max_abs > 0:
-                        net_exposure_norm[:, col] = net_exposure[:, col] / max_abs
+                    # Normalize Net Exposure
+                    for col in range(net_exposure.shape[1]):
+                        max_abs = np.nanmax(np.abs(net_exposure[:, col]))
+                        if max_abs > 0:
+                            net_exposure_norm[:, col] = net_exposure[:, col] / max_abs
                 
                 # Final cleanup of normalized matrices
                 call_exposure_norm = np.nan_to_num(call_exposure_norm)
