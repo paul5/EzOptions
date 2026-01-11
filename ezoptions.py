@@ -8175,18 +8175,9 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 if exposure_type in ['GEX', 'GEX_notional']:
                     if st.session_state.get('gex_type', 'Net') == 'Net':
                         net_exposure = call_exposure - put_exposure
-                    else: # Absolute (Dominant)
-                        # Create a mask where calls >= puts
-                        mask = call_exposure >= put_exposure
-                        
-                        # Initialize net_exposure
-                        net_exposure = np.zeros_like(call_exposure)
-                        
-                        # Where calls >= puts, use call_exposure (positive)
-                        net_exposure[mask] = call_exposure[mask]
-                        
-                        # Where puts > calls, use -put_exposure (negative)
-                        net_exposure[~mask] = -put_exposure[~mask]
+                    else: # Absolute
+                        # Absolute GEX: Sum of absolute values
+                        net_exposure = np.abs(call_exposure) + np.abs(put_exposure)
                 elif exposure_type == 'DEX':
                     net_exposure = call_exposure + put_exposure
                 else:
