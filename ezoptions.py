@@ -3187,6 +3187,7 @@ def reset_session_state():
         'candlestick_type',
         'show_vix_overlay',
         'gex_type',
+        'abs_gex_opacity',
         'intraday_exposure_levels',
         'show_straddle',
         'show_technical_indicators',
