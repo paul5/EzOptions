@@ -3205,7 +3205,8 @@ def reset_session_state():
         'calculate_in_notional',
         'global_selected_expiries',
         'saved_exposure_heatmap_type',
-        'intraday_level_count'
+        'intraday_level_count',
+        'show_sd_move'
     }
     
     # Initialize visibility settings if they don't exist
@@ -3998,6 +3999,9 @@ def chart_settings():
 
         if 'show_straddle' not in st.session_state:
             st.session_state.show_straddle = False  # Default to not showing Straddle
+            
+        if 'show_sd_move' not in st.session_state:
+            st.session_state.show_sd_move = False  # Default to not showing 1 SD Move
 
         # Exposure levels multiselect
         exposure_options = ['GEX', 'DEX', 'VEX', 'Charm', 'Speed', 'Vomma', 'Color']
@@ -4017,7 +4021,21 @@ def chart_settings():
             key='intraday_level_count'
         )
         
-        st.checkbox("Show Straddle", value=st.session_state.show_straddle, key='show_straddle')
+        col1, col2 = st.columns(2)
+        with col1:
+            st.checkbox(
+                "Show Straddle", 
+                value=st.session_state.show_straddle, 
+                key='show_straddle',
+                help="Plots top and bottom breakeven lines for the ATM Straddle. Historically, price stays within this range ~55% of the time."
+            )
+        with col2:
+            st.checkbox(
+                "Show 1 SD Move", 
+                value=st.session_state.show_sd_move, 
+                key='show_sd_move',
+                help="Plots the expected 1 Standard Deviation move. Statistically, price stays within this range ~68.2% of the time."
+            )
 
         # Add refresh rate control before chart type
         if 'refresh_rate' not in st.session_state:
@@ -6923,6 +6941,120 @@ elif st.session_state.current_page == "Dashboard":
                                 # Update y-axis range to include straddle levels
                                 y_min = min(y_min, lower_breakeven - padding)
                                 y_max = max(y_max, upper_breakeven + padding)
+
+                        # Add 1 SD Move if enabled
+                        if st.session_state.show_sd_move:
+                            # Find ATM strike
+                            atm_strike = min(calls['strike'], key=lambda x: abs(x - current_price))
+                            
+                            # Get Call and Put prices for ATM strike
+                            atm_call = calls[calls['strike'] == atm_strike]
+                            atm_put = puts[puts['strike'] == atm_strike]
+                            
+                            if not atm_call.empty and not atm_put.empty:
+                                try:
+                                    # Determing Expiration Date and Time (t) first
+                                    if 'extracted_expiry' in atm_call.columns:
+                                        expiry_date = atm_call.iloc[0]['extracted_expiry']
+                                    elif len(selected_expiry_dates) > 0:
+                                        expiry_date = datetime.strptime(selected_expiry_dates[0], "%Y-%m-%d").date()
+                                    else:
+                                        expiry_date = datetime.now().date()
+                                    
+                                    t = calculate_time_to_expiration(expiry_date)
+                                    t = max(t, 1e-5) # Safety
+
+                                    # Manual IV Calculation
+                                    r = st.session_state.get('risk_free_rate', 0.04)
+                                    q_yield = 0
+
+                                    call_row = atm_call.iloc[0]
+                                    put_row = atm_put.iloc[0]
+                                    
+                                    # Calculate Mid Prices
+                                    call_price = (call_row.get('bid', 0) + call_row.get('ask', 0)) / 2
+                                    put_price = (put_row.get('bid', 0) + put_row.get('ask', 0)) / 2
+
+                                    iv_call = calculate_implied_volatility(call_price, current_price, atm_strike, t, r, 'c', q_yield)
+                                    iv_put = calculate_implied_volatility(put_price, current_price, atm_strike, t, r, 'p', q_yield)
+                                    
+                                    # Fallback if manual calculation failed
+                                    if iv_call is None:
+                                        iv_call = call_row.get('impliedVolatility', 0)
+                                    if iv_put is None:
+                                        iv_put = put_row.get('impliedVolatility', 0)
+                                    
+                                    if iv_call is not None and iv_put is not None and iv_call > 0 and iv_put > 0:
+                                        avg_iv = (iv_call + iv_put) / 2
+                                        
+                                        # Calculate 1 SD Move
+                                        # 1 SD = Price * IV * sqrt(t)
+                                        sd_move = current_price * avg_iv * sqrt(t)
+                                        
+                                        upper_sd = current_price + sd_move
+                                        lower_sd = current_price - sd_move
+                                        
+                                        # Add Upper 1 SD Line
+                                        fig_intraday.add_shape(
+                                            type='line',
+                                            x0=intraday_data.index[0],
+                                            x1=intraday_data.index[-1],
+                                            y0=upper_sd,
+                                            y1=upper_sd,
+                                            line=dict(
+                                                color="#1E90FF", # Dodger Blue
+                                                width=2,
+                                                dash="dashdot"
+                                            ),
+                                            xref='x',
+                                            yref='y',
+                                            layer='below'
+                                        )
+                                        
+                                        fig_intraday.add_annotation(
+                                            x=0.92,
+                                            y=upper_sd,
+                                            text=f"+1 SD {upper_sd:.2f}",
+                                            font=dict(color="#1E90FF", size=st.session_state.chart_text_size),
+                                            showarrow=False,
+                                            xref="paper",
+                                            yref="y",
+                                            xanchor="left"
+                                        )
+                                        
+                                        # Add Lower 1 SD Line
+                                        fig_intraday.add_shape(
+                                            type='line',
+                                            x0=intraday_data.index[0],
+                                            x1=intraday_data.index[-1],
+                                            y0=lower_sd,
+                                            y1=lower_sd,
+                                            line=dict(
+                                                color="#1E90FF",
+                                                width=2,
+                                                dash="dashdot"
+                                            ),
+                                            xref='x',
+                                            yref='y',
+                                            layer='below'
+                                        )
+
+                                        fig_intraday.add_annotation(
+                                            x=0.92,
+                                            y=lower_sd,
+                                            text=f"-1 SD {lower_sd:.2f}",
+                                            font=dict(color="#1E90FF", size=st.session_state.chart_text_size),
+                                            showarrow=False,
+                                            xref="paper",
+                                            yref="y",
+                                            xanchor="left"
+                                        )
+                                        
+                                        # Update y-axis range
+                                        y_min = min(y_min, lower_sd - padding)
+                                        y_max = max(y_max, upper_sd + padding)
+                                except Exception as e:
+                                    print(f"Error calculating 1 SD Move: {e}")
 
                         # Ensure minimum range
                         if abs(y_max - y_min) < (current_price * 0.01):  # Minimum 1% range
