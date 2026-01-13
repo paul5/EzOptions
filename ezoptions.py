@@ -497,16 +497,17 @@ def fetch_options_for_date(ticker, date, S=None):
             except Exception:
                 pass # Date might not exist for this ticker
 
-        # Fetch for all components (Chain source is ^SPX)
-        add_scaled_data("^SPX", spx_price, 1.0)
-        
-        # Build reference grid from SPX data
+        # Build reference grid from SPX data (without adding SPX options to the result)
         grid_strikes = set()
-        # Assume first item in lists is SPX since called first
-        if calls_list and 'strike' in calls_list[0].columns:
-            grid_strikes.update(calls_list[0]['strike'].tolist())
-        if puts_list and 'strike' in puts_list[0].columns:
-            grid_strikes.update(puts_list[0]['strike'].tolist())
+        try:
+            # We fetch SPX data just to get the strikes grid
+            spx_c, spx_p = fetch_options_for_date("^SPX", date, spx_price)
+            if not spx_c.empty and 'strike' in spx_c.columns:
+                grid_strikes.update(spx_c['strike'].tolist())
+            if not spx_p.empty and 'strike' in spx_p.columns:
+                grid_strikes.update(spx_p['strike'].tolist())
+        except Exception:
+            pass
             
         if grid_strikes:
             spx_strikes_grid = np.array(sorted(list(grid_strikes)))
