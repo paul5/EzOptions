@@ -433,88 +433,72 @@ def fetch_options_for_date(ticker, date, S=None):
              if not spx_price:
                  return pd.DataFrame(), pd.DataFrame()
         
-        # Calculate scaling factors (Target Base / Source Base)
-        # We scale strikes of SPY/QQQ/IWM up to SPX levels
-        spy_factor = spx_price / spy_price if spy_price else 0
-        qqq_factor = spx_price / qqq_price if qqq_price else 0
-        iwm_factor = spx_price / iwm_price if iwm_price else 0
-        
         calls_list = []
         puts_list = []
-        spx_strikes_grid = None
         
-        # Helper to fetch and scale
-        def add_scaled_data(tick, price, factor):
+        # Helper to fetch and scale by moneyness
+        def add_scaled_data(tick, etf_price):
             try:
-                # Recursive call to fetch data for component ticker
-                c, p = fetch_options_for_date(tick, date, price)
-                
-                cols_to_scale_up = ['lastPrice', 'bid', 'ask', 'change', 'strike']
-                cols_to_scale_down = ['volume', 'openInterest']
+                # Fetch ETF options
+                c, p = fetch_options_for_date(tick, date, etf_price)
                 
                 if not c.empty:
                     c = c.copy()
-                    if factor != 1.0:
-                        for col in cols_to_scale_up:
-                            if col in c.columns:
-                                c[col] = c[col] * factor
-                        for col in cols_to_scale_down:
-                            if col in c.columns:
-                                c[col] = c[col] / factor
-                        
-                        # Snap to SPX grid if available
-                        if spx_strikes_grid is not None and len(spx_strikes_grid) > 0 and 'strike' in c.columns:
-                            vals = c['strike'].values
-                            # Find nearest strike in grid
-                            idx = np.abs(spx_strikes_grid[None, :] - vals[:, None]).argmin(axis=1)
-                            c['strike'] = spx_strikes_grid[idx]
-                        elif 'strike' in c.columns:
-                             # Fallback to rounding if grid is somehow missing for non-1.0 factor
-                             c['strike'] = c['strike'].round(0).astype(int)
+                    # Calculate moneyness (strike / spot) for each ETF option
+                    c['moneyness'] = c['strike'] / etf_price
+                    # Map to SPX strikes by moneyness: SPX_strike = moneyness * SPX_price
+                    c['strike'] = (c['moneyness'] * spx_price / 5).round() * 5
+                    c.drop(columns=['moneyness'], inplace=True)
+                    
+                    # Scale prices by price ratio (options are more expensive on higher priced underlyings)
+                    price_ratio = spx_price / etf_price
+                    for col in ['lastPrice', 'bid', 'ask', 'change']:
+                        if col in c.columns:
+                            c[col] = c[col] * price_ratio
+                    
+                    # Don't scale volume/OI - keep actual liquidity metrics
+                    # This shows true market activity at each moneyness level
                     
                     calls_list.append(c)
                 
                 if not p.empty:
                     p = p.copy()
-                    if factor != 1.0:
-                        for col in cols_to_scale_up:
-                            if col in p.columns:
-                                p[col] = p[col] * factor
-                        for col in cols_to_scale_down:
-                             if col in p.columns:
-                                p[col] = p[col] / factor
-                        
-                        # Snap to SPX grid if available
-                        if spx_strikes_grid is not None and len(spx_strikes_grid) > 0 and 'strike' in p.columns:
-                            vals = p['strike'].values
-                            # Find nearest strike in grid
-                            idx = np.abs(spx_strikes_grid[None, :] - vals[:, None]).argmin(axis=1)
-                            p['strike'] = spx_strikes_grid[idx]
-                        elif 'strike' in p.columns:
-                            p['strike'] = p['strike'].round(0).astype(int)
-
+                    p['moneyness'] = p['strike'] / etf_price
+                    p['strike'] = (p['moneyness'] * spx_price / 5).round() * 5
+                    p.drop(columns=['moneyness'], inplace=True)
+                    
+                    price_ratio = spx_price / etf_price
+                    for col in ['lastPrice', 'bid', 'ask', 'change']:
+                        if col in p.columns:
+                            p[col] = p[col] * price_ratio
+                    
                     puts_list.append(p)
             except Exception:
                 pass # Date might not exist for this ticker
 
-        # Build reference grid from SPX data (without adding SPX options to the result)
+        # Build reference grid from SPX data AND include SPX in the composite
         grid_strikes = set()
         try:
-            # We fetch SPX data just to get the strikes grid
+            # Fetch SPX data - use it for both the grid AND include in results
             spx_c, spx_p = fetch_options_for_date("^SPX", date, spx_price)
             if not spx_c.empty and 'strike' in spx_c.columns:
                 grid_strikes.update(spx_c['strike'].tolist())
+                calls_list.append(spx_c)  # Include SPX calls
             if not spx_p.empty and 'strike' in spx_p.columns:
                 grid_strikes.update(spx_p['strike'].tolist())
+                puts_list.append(spx_p)  # Include SPX puts
         except Exception:
             pass
             
         if grid_strikes:
             spx_strikes_grid = np.array(sorted(list(grid_strikes)))
+        else:
+            spx_strikes_grid = None
         
-        if spy_factor: add_scaled_data("SPY", spy_price, spy_factor)
-        if qqq_factor: add_scaled_data("QQQ", qqq_price, qqq_factor)
-        if iwm_factor: add_scaled_data("IWM", iwm_price, iwm_factor)
+        # Add scaled data from ETFs using moneyness mapping
+        if spy_price: add_scaled_data("SPY", spy_price)
+        if qqq_price: add_scaled_data("QQQ", qqq_price)
+        if iwm_price: add_scaled_data("IWM", iwm_price)
         
         combined_calls = pd.concat(calls_list, ignore_index=True) if calls_list else pd.DataFrame()
         combined_puts = pd.concat(puts_list, ignore_index=True) if puts_list else pd.DataFrame()
@@ -553,75 +537,58 @@ def fetch_all_options(ticker):
         qqq_price = get_current_price("QQQ") 
         iwm_price = get_current_price("IWM")
         
-        spy_factor = spx_price / spy_price if spy_price else 1
-        qqq_factor = spx_price / qqq_price if qqq_price else 1
-        iwm_factor = spx_price / iwm_price if iwm_price else 1
-        
         calls_list = []
         puts_list = []
-        spx_strikes_grid = None
         
-        # Helper to fetch and scale
-        def process_component(tick, factor):
+        # Helper to fetch and scale by moneyness
+        def process_component(tick, etf_price):
             try:
                 c, p = fetch_all_options(tick)
-                cols_to_scale_up = ['lastPrice', 'bid', 'ask', 'change', 'strike']
-                cols_to_scale_down = ['volume', 'openInterest']
                 
                 if not c.empty:
                     c = c.copy()
-                    if factor != 1.0: 
-                        for col in cols_to_scale_up:
-                            if col in c.columns:
-                                c[col] = c[col] * factor
-                        for col in cols_to_scale_down:
-                             if col in c.columns:
-                                c[col] = c[col] / factor
+                    # Map by moneyness to SPX strikes
+                    c['moneyness'] = c['strike'] / etf_price
+                    c['strike'] = (c['moneyness'] * spx_price / 5).round() * 5
+                    c.drop(columns=['moneyness'], inplace=True)
                     
-                        # Snap to SPX grid if available
-                        if spx_strikes_grid is not None and len(spx_strikes_grid) > 0 and 'strike' in c.columns:
-                            vals = c['strike'].values
-                            idx = np.abs(spx_strikes_grid[None, :] - vals[:, None]).argmin(axis=1)
-                            c['strike'] = spx_strikes_grid[idx]
-                        elif 'strike' in c.columns:
-                            c['strike'] = c['strike'].round(0).astype(int)
+                    # Scale prices by price ratio
+                    price_ratio = spx_price / etf_price
+                    for col in ['lastPrice', 'bid', 'ask', 'change']:
+                        if col in c.columns:
+                            c[col] = c[col] * price_ratio
+                    
+                    # Keep volume/OI unscaled (true market activity)
                     
                     calls_list.append(c)
                 if not p.empty:
                     p = p.copy()
-                    if factor != 1.0: 
-                        for col in cols_to_scale_up:
-                            if col in p.columns:
-                                p[col] = p[col] * factor
-                        for col in cols_to_scale_down:
-                             if col in p.columns:
-                                p[col] = p[col] / factor
+                    p['moneyness'] = p['strike'] / etf_price
+                    p['strike'] = (p['moneyness'] * spx_price / 5).round() * 5
+                    p.drop(columns=['moneyness'], inplace=True)
                     
-                        # Snap to SPX grid if available
-                        if spx_strikes_grid is not None and len(spx_strikes_grid) > 0 and 'strike' in p.columns:
-                            vals = p['strike'].values
-                            idx = np.abs(spx_strikes_grid[None, :] - vals[:, None]).argmin(axis=1)
-                            p['strike'] = spx_strikes_grid[idx]
-                        elif 'strike' in p.columns:
-                            p['strike'] = p['strike'].round(0).astype(int)
+                    price_ratio = spx_price / etf_price
+                    for col in ['lastPrice', 'bid', 'ask', 'change']:
+                        if col in p.columns:
+                            p[col] = p[col] * price_ratio
+                    
                     puts_list.append(p)
             except: pass
 
-        process_component("^SPX", 1.0)
+        # Include SPX native options first
+        try:
+            spx_c, spx_p = fetch_all_options("^SPX")
+            if not spx_c.empty:
+                calls_list.append(spx_c)
+            if not spx_p.empty:
+                puts_list.append(spx_p)
+        except:
+            pass
         
-        # Build reference grid from SPX data
-        grid_strikes = set()
-        if calls_list and 'strike' in calls_list[0].columns:
-            grid_strikes.update(calls_list[0]['strike'].tolist())
-        if puts_list and 'strike' in puts_list[0].columns:
-            grid_strikes.update(puts_list[0]['strike'].tolist())
-            
-        if grid_strikes:
-            spx_strikes_grid = np.array(sorted(list(grid_strikes)))
-            
-        process_component("SPY", spy_factor)
-        process_component("QQQ", qqq_factor)
-        process_component("IWM", iwm_factor)
+        # Add scaled ETF data using moneyness mapping
+        if spy_price: process_component("SPY", spy_price)
+        if qqq_price: process_component("QQQ", qqq_price)
+        if iwm_price: process_component("IWM", iwm_price)
         
         combined_calls = pd.concat(calls_list, ignore_index=True) if calls_list else pd.DataFrame()
         combined_puts = pd.concat(puts_list, ignore_index=True) if puts_list else pd.DataFrame()
