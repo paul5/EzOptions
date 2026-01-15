@@ -1018,7 +1018,7 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
             bid = row['bid'] if pd.notna(row['bid']) else 0
             ask = row['ask'] if pd.notna(row['ask']) else 0
             price = (bid + ask) / 2
-            call_premium[i, j] = vol * price * 100
+            call_premium[i, j] += vol * price * 100
     
     for _, row in puts_df.iterrows():
         if row['strike'] in strike_to_idx and row['expiry_date'] in expiry_to_idx:
@@ -1028,7 +1028,7 @@ def create_option_premium_heatmap(calls_df, puts_df, strikes, expiry_dates, curr
             bid = row['bid'] if pd.notna(row['bid']) else 0
             ask = row['ask'] if pd.notna(row['ask']) else 0
             price = (bid + ask) / 2
-            put_premium[i, j] = vol * price * 100
+            put_premium[i, j] += vol * price * 100
     
     # Create heatmaps
     call_color = st.session_state.call_color
@@ -2481,7 +2481,7 @@ def calculate_color(flag, S, K, t, sigma, r=None, q=0):
     except Exception as e:
         return None
 
-def calculate_implied_move(S, calls_df, puts_df):
+def calculate_implied_move(S, calls_df, puts_df, ticker=None):
     """Calculate implied move based on straddle prices."""
     try:
         # Find ATM strike (closest to current price)
@@ -2493,13 +2493,32 @@ def calculate_implied_move(S, calls_df, puts_df):
         atm_put = puts_df[puts_df['strike'] == atm_strike]
         
         if not atm_call.empty and not atm_put.empty:
-            # Use Mid Price for better accuracy
-            call_bid = atm_call['bid'].iloc[0]
-            call_ask = atm_call['ask'].iloc[0]
+            # Special handling for MARKET ticker - aggregate across multiple ETF sources
+            if ticker == "MARKET":
+                # Volume-weighted average of bid/ask across all ETFs at this strike
+                call_total_vol = atm_call['volume'].sum()
+                put_total_vol = atm_put['volume'].sum()
+                
+                if call_total_vol > 0 and put_total_vol > 0:
+                    # Weight by volume for more accurate market price
+                    call_bid = (atm_call['bid'] * atm_call['volume']).sum() / call_total_vol
+                    call_ask = (atm_call['ask'] * atm_call['volume']).sum() / call_total_vol
+                    put_bid = (atm_put['bid'] * atm_put['volume']).sum() / put_total_vol
+                    put_ask = (atm_put['ask'] * atm_put['volume']).sum() / put_total_vol
+                else:
+                    # Fallback to simple average if no volume
+                    call_bid = atm_call['bid'].mean()
+                    call_ask = atm_call['ask'].mean()
+                    put_bid = atm_put['bid'].mean()
+                    put_ask = atm_put['ask'].mean()
+            else:
+                # Normal handling for single ticker
+                call_bid = atm_call['bid'].iloc[0]
+                call_ask = atm_call['ask'].iloc[0]
+                put_bid = atm_put['bid'].iloc[0]
+                put_ask = atm_put['ask'].iloc[0]
+            
             call_price = (call_bid + call_ask) / 2
-
-            put_bid = atm_put['bid'].iloc[0]
-            put_ask = atm_put['ask'].iloc[0]
             put_price = (put_bid + put_ask) / 2
             
             straddle_price = call_price + put_price
@@ -2519,11 +2538,11 @@ def calculate_implied_move(S, calls_df, puts_df):
     
     return None
 
-def find_probability_strikes(calls_df, puts_df, S, expiry_date, target_prob=0.5, q=0):
+def find_probability_strikes(calls_df, puts_df, S, expiry_date, target_prob=0.5, q=0, ticker=None):
     """Find strikes where there's exactly target_prob chance of being above/below at expiration."""
     try:
         # Calculate probability distribution first
-        prob_df = calculate_probability_distribution(calls_df, puts_df, S, expiry_date, q)
+        prob_df = calculate_probability_distribution(calls_df, puts_df, S, expiry_date, q, ticker)
         
         if prob_df.empty:
             return None
@@ -2561,12 +2580,38 @@ def find_probability_strikes(calls_df, puts_df, S, expiry_date, target_prob=0.5,
         print(f"Error finding probability strikes: {e}")
         return None
 
-def find_delta_strikes(calls_df, puts_df, target_delta=0.5):
+def find_delta_strikes(calls_df, puts_df, target_delta=0.5, ticker=None):
     """Find strikes closest to the target delta (for delta-based analysis)."""
     try:
+        # For MARKET ticker, aggregate deltas by strike using volume weighting
+        if ticker == "MARKET":
+            # Aggregate calls by strike with volume-weighted delta
+            call_agg = calls_df[calls_df['calc_delta'].notna()].groupby('strike').apply(
+                lambda x: pd.Series({
+                    'calc_delta': (x['calc_delta'] * x['volume'].fillna(0)).sum() / x['volume'].fillna(0).sum() 
+                                 if x['volume'].fillna(0).sum() > 0 
+                                 else x['calc_delta'].mean()
+                })
+            ).reset_index()
+            
+            # Aggregate puts by strike with volume-weighted delta
+            put_agg = puts_df[puts_df['calc_delta'].notna()].groupby('strike').apply(
+                lambda x: pd.Series({
+                    'calc_delta': (x['calc_delta'] * x['volume'].fillna(0)).sum() / x['volume'].fillna(0).sum() 
+                                 if x['volume'].fillna(0).sum() > 0 
+                                 else x['calc_delta'].mean()
+                })
+            ).reset_index()
+            
+            calls_to_search = call_agg
+            puts_to_search = put_agg
+        else:
+            calls_to_search = calls_df
+            puts_to_search = puts_df
+        
         # For calls, find strike closest to target delta
-        if 'calc_delta' in calls_df.columns:
-            call_deltas = calls_df[calls_df['calc_delta'].notna()]
+        if 'calc_delta' in calls_to_search.columns:
+            call_deltas = calls_to_search[calls_to_search['calc_delta'].notna()]
             if not call_deltas.empty:
                 call_target = call_deltas.iloc[(call_deltas['calc_delta'] - target_delta).abs().argsort()[:1]]
                 call_strike = call_target['strike'].iloc[0] if not call_target.empty else None
@@ -2577,8 +2622,8 @@ def find_delta_strikes(calls_df, puts_df, target_delta=0.5):
             call_strike, call_delta = None, None
         
         # For puts, find strike closest to -target_delta (puts have negative delta)
-        if 'calc_delta' in puts_df.columns:
-            put_deltas = puts_df[puts_df['calc_delta'].notna()]
+        if 'calc_delta' in puts_to_search.columns:
+            put_deltas = puts_to_search[puts_to_search['calc_delta'].notna()]
             if not put_deltas.empty:
                 put_target = put_deltas.iloc[(put_deltas['calc_delta'] - (-target_delta)).abs().argsort()[:1]]
                 put_strike = put_target['strike'].iloc[0] if not put_target.empty else None
@@ -2600,7 +2645,7 @@ def find_delta_strikes(calls_df, puts_df, target_delta=0.5):
         print(f"Error finding delta strikes: {e}")
         return None
 
-def calculate_probability_distribution(calls_df, puts_df, S, expiry_date, q=0):
+def calculate_probability_distribution(calls_df, puts_df, S, expiry_date, q=0, ticker=None):
     """Calculate probability distribution from option prices using risk-neutral probabilities."""
     try:
         # Get all strikes and sort them
@@ -2628,16 +2673,28 @@ def calculate_probability_distribution(calls_df, puts_df, S, expiry_date, q=0):
             try:
                 # Use Call data if available, else Put
                 if not call_data.empty:
-                    row = call_data.iloc[0]
                     flag = 'c'
+                    data = call_data
                 elif not put_data.empty:
-                    row = put_data.iloc[0]
                     flag = 'p'
+                    data = put_data
                 else:
                     continue
 
-                bid = row.get('bid', 0)
-                ask = row.get('ask', 0)
+                # For MARKET ticker, use volume-weighted average
+                if ticker == "MARKET" and len(data) > 1:
+                    vols = data['volume'].fillna(0)
+                    if vols.sum() > 0:
+                        bid = (data['bid'].fillna(0) * vols).sum() / vols.sum()
+                        ask = (data['ask'].fillna(0) * vols).sum() / vols.sum()
+                    else:
+                        bid = data['bid'].mean()
+                        ask = data['ask'].mean()
+                else:
+                    row = data.iloc[0]
+                    bid = row.get('bid', 0)
+                    ask = row.get('ask', 0)
+                
                 price = (bid + ask) / 2
                 
                 if price > 0:
@@ -6860,10 +6917,32 @@ elif st.session_state.current_page == "Dashboard":
                             atm_put = puts[puts['strike'] == atm_strike]
                             
                             if not atm_call.empty and not atm_put.empty:
-                                call_row = atm_call.iloc[0]
-                                put_row = atm_put.iloc[0]
-                                call_price = (call_row.get('bid', 0) + call_row.get('ask', 0)) / 2
-                                put_price = (put_row.get('bid', 0) + put_row.get('ask', 0)) / 2
+                                # Special handling for MARKET ticker - aggregate across multiple ETF sources
+                                if user_ticker == "MARKET":
+                                    # Volume-weighted average of bid/ask across all ETFs at this strike
+                                    call_total_vol = atm_call['volume'].sum()
+                                    put_total_vol = atm_put['volume'].sum()
+                                    
+                                    if call_total_vol > 0 and put_total_vol > 0:
+                                        # Weight by volume for more accurate market price
+                                        call_bid_weighted = (atm_call['bid'] * atm_call['volume']).sum() / call_total_vol
+                                        call_ask_weighted = (atm_call['ask'] * atm_call['volume']).sum() / call_total_vol
+                                        put_bid_weighted = (atm_put['bid'] * atm_put['volume']).sum() / put_total_vol
+                                        put_ask_weighted = (atm_put['ask'] * atm_put['volume']).sum() / put_total_vol
+                                        
+                                        call_price = (call_bid_weighted + call_ask_weighted) / 2
+                                        put_price = (put_bid_weighted + put_ask_weighted) / 2
+                                    else:
+                                        # Fallback to simple average if no volume
+                                        call_price = (atm_call['bid'].mean() + atm_call['ask'].mean()) / 2
+                                        put_price = (atm_put['bid'].mean() + atm_put['ask'].mean()) / 2
+                                else:
+                                    # Normal handling for single ticker
+                                    call_row = atm_call.iloc[0]
+                                    put_row = atm_put.iloc[0]
+                                    call_price = (call_row.get('bid', 0) + call_row.get('ask', 0)) / 2
+                                    put_price = (put_row.get('bid', 0) + put_row.get('ask', 0)) / 2
+                                
                                 straddle_price = call_price + put_price
                                 
                                 upper_breakeven = atm_strike + straddle_price
@@ -6955,12 +7034,39 @@ elif st.session_state.current_page == "Dashboard":
                                     r = st.session_state.get('risk_free_rate', 0.04)
                                     q_yield = 0
 
-                                    call_row = atm_call.iloc[0]
-                                    put_row = atm_put.iloc[0]
-                                    
-                                    # Calculate Mid Prices
-                                    call_price = (call_row.get('bid', 0) + call_row.get('ask', 0)) / 2
-                                    put_price = (put_row.get('bid', 0) + put_row.get('ask', 0)) / 2
+                                    # For MARKET ticker, use volume-weighted average of bid/ask
+                                    if user_ticker == "MARKET":
+                                        # Volume-weighted call price
+                                        call_vols = atm_call['volume'].fillna(0)
+                                        if call_vols.sum() > 0:
+                                            call_bid = (atm_call['bid'].fillna(0) * call_vols).sum() / call_vols.sum()
+                                            call_ask = (atm_call['ask'].fillna(0) * call_vols).sum() / call_vols.sum()
+                                        else:
+                                            call_bid = atm_call['bid'].mean()
+                                            call_ask = atm_call['ask'].mean()
+                                        call_price = (call_bid + call_ask) / 2
+                                        
+                                        # Volume-weighted put price
+                                        put_vols = atm_put['volume'].fillna(0)
+                                        if put_vols.sum() > 0:
+                                            put_bid = (atm_put['bid'].fillna(0) * put_vols).sum() / put_vols.sum()
+                                            put_ask = (atm_put['ask'].fillna(0) * put_vols).sum() / put_vols.sum()
+                                        else:
+                                            put_bid = atm_put['bid'].mean()
+                                            put_ask = atm_put['ask'].mean()
+                                        put_price = (put_bid + put_ask) / 2
+                                        
+                                        # Use first row for fallback IV
+                                        call_row = atm_call.iloc[0]
+                                        put_row = atm_put.iloc[0]
+                                    else:
+                                        # Normal single-ticker logic
+                                        call_row = atm_call.iloc[0]
+                                        put_row = atm_put.iloc[0]
+                                        
+                                        # Calculate Mid Prices
+                                        call_price = (call_row.get('bid', 0) + call_row.get('ask', 0)) / 2
+                                        put_price = (put_row.get('bid', 0) + put_row.get('ask', 0)) / 2
 
                                     iv_call = calculate_implied_volatility(call_price, current_price, atm_strike, t, r, 'c', q_yield)
                                     iv_put = calculate_implied_volatility(put_price, current_price, atm_strike, t, r, 'p', q_yield)
@@ -8774,11 +8880,11 @@ elif st.session_state.current_page == "Implied Probabilities":
                     nearest_puts = all_puts[all_puts['extracted_expiry'] == pd.to_datetime(nearest_expiry).date()]
                     
                     # Calculate implied move
-                    implied_move_data = calculate_implied_move(S, nearest_calls, nearest_puts)
+                    implied_move_data = calculate_implied_move(S, nearest_calls, nearest_puts, user_ticker)
                     
                     # Calculate delta-based probability strikes (industry standard)
-                    prob_16_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.16, q)  # ~1 standard deviation
-                    prob_30_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.30, q)  # Common institutional level
+                    prob_16_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.16, q, user_ticker)  # ~1 standard deviation
+                    prob_30_data = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, 0.30, q, user_ticker)  # Common institutional level
                     
                     # Display metrics in columns
                     col1, col2, col3 = st.columns(3)
@@ -8937,7 +9043,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                     prob_data = []
                     
                     for prob in prob_levels:
-                        prob_info = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, prob, q)
+                        prob_info = find_probability_strikes(nearest_calls, nearest_puts, S, nearest_expiry, prob, q, user_ticker)
                         if prob_info:
                             prob_data.append({
                                 'Probability Level': f"{prob*100:.0f}%",
@@ -8968,7 +9074,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                     st.subheader("Probability Visualization")
                     
                     # Calculate probability distribution
-                    prob_df = calculate_probability_distribution(nearest_calls, nearest_puts, S, nearest_expiry, q)
+                    prob_df = calculate_probability_distribution(nearest_calls, nearest_puts, S, nearest_expiry, q, user_ticker)
                     
                     # Create comprehensive chart
                     if not prob_df.empty:
