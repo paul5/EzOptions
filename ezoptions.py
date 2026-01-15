@@ -3734,13 +3734,16 @@ def chart_settings():
                 st.session_state.exposure_metric = 'Volume'
             else:
                 st.session_state.exposure_metric = 'Open Interest'
+        # Migrate from old "Volume Weighted by OI" to new "OI Weighted by Volume"
+        elif st.session_state.exposure_metric == 'Volume Weighted by OI':
+            st.session_state.exposure_metric = 'OI Weighted by Volume'
         
         st.selectbox(
             "Exposure Calculation Metric:",
-            options=['Open Interest', 'Volume', 'Volume Weighted by OI'],
-            index=['Open Interest', 'Volume', 'Volume Weighted by OI'].index(st.session_state.exposure_metric),
+            options=['Open Interest', 'Volume', 'OI Weighted by Volume'],
+            index=['Open Interest', 'Volume', 'OI Weighted by Volume'].index(st.session_state.exposure_metric) if st.session_state.exposure_metric in ['Open Interest', 'Volume', 'OI Weighted by Volume'] else 0,
             key='exposure_metric',
-            help="Choose the metric used for weighting Greek exposures"
+            help="Open Interest: Use raw OI for exposure calculations.\nVolume: Use today's volume only.\nOI Weighted by Volume: OI × (1 + Volume/MaxVolume) - Weights OI by relative trading activity."
         )
 
         # Initialize perspective setting
@@ -4197,10 +4200,20 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     if metric_type == 'Volume':
         calls_metric = calls['volume']
         puts_metric = puts['volume']
-    elif metric_type == 'Volume Weighted by OI':
-        # Average of Volume and OI: (Volume + OI) / 2
-        calls_metric = (calls['volume'].fillna(0) + calls['openInterest'].fillna(0)) / 2
-        puts_metric = (puts['volume'].fillna(0) + puts['openInterest'].fillna(0)) / 2
+    elif metric_type == 'OI Weighted by Volume':
+        # OI scaled by relative volume activity: OI * (1 + Volume / max(Volume))
+        # This weights OI by how active each strike is relative to the most active strike
+        calls_vol = calls['volume'].fillna(0)
+        puts_vol = puts['volume'].fillna(0)
+        calls_oi = calls['openInterest'].fillna(0)
+        puts_oi = puts['openInterest'].fillna(0)
+        
+        # Calculate max volume across all options for normalization
+        max_vol = max(calls_vol.max(), puts_vol.max(), 1)  # Avoid division by zero
+        
+        # OI weighted by relative volume activity (range: OI to 2*OI)
+        calls_metric = calls_oi * (1 + calls_vol / max_vol)
+        puts_metric = puts_oi * (1 + puts_vol / max_vol)
     else: # Open Interest
         calls_metric = calls['openInterest']
         puts_metric = puts['openInterest']
@@ -5108,9 +5121,15 @@ def create_davi_chart(calls, puts, S, date_count=1):
     if metric_type == 'Volume':
         calls_metric = calls_df['volume'].fillna(0)
         puts_metric = puts_df['volume'].fillna(0)
-    elif metric_type == 'Volume Weighted by OI':
-        calls_metric = (calls_df['volume'].fillna(0) + calls_df['openInterest'].fillna(0)) / 2
-        puts_metric = (puts_df['volume'].fillna(0) + puts_df['openInterest'].fillna(0)) / 2
+    elif metric_type == 'OI Weighted by Volume':
+        # OI scaled by relative volume activity: OI * (1 + Volume / max(Volume))
+        calls_vol = calls_df['volume'].fillna(0)
+        puts_vol = puts_df['volume'].fillna(0)
+        calls_oi = calls_df['openInterest'].fillna(0)
+        puts_oi = puts_df['openInterest'].fillna(0)
+        max_vol = max(calls_vol.max(), puts_vol.max(), 1)
+        calls_metric = calls_oi * (1 + calls_vol / max_vol)
+        puts_metric = puts_oi * (1 + puts_vol / max_vol)
     else: # Open Interest
         calls_metric = calls_df['openInterest'].fillna(0)
         puts_metric = puts_df['openInterest'].fillna(0)
