@@ -328,12 +328,16 @@ def format_ticker(ticker):
     return ticker
 
 def format_large_number(num):
-    """Format large numbers with suffixes (K, M, B, T)"""
+    """Format large numbers with suffixes (K, M, B, T, Q, Qi)"""
     if num is None:
         return "0"
     
     abs_num = abs(num)
-    if abs_num >= 1e12:
+    if abs_num >= 1e18:  # Quintillion
+        return f"{num/1e18:.2f}Qi"
+    elif abs_num >= 1e15:  # Quadrillion
+        return f"{num/1e15:.2f}Q"
+    elif abs_num >= 1e12:
         return f"{num/1e12:.2f}T"
     elif abs_num >= 1e9:
         return f"{num/1e9:.2f}B"
@@ -4715,32 +4719,41 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                     fillcolor=put_color
                 ))
 
-    # Calculate y-axis range with improved padding
-    y_values = []
-    for trace in fig.data:
-        if hasattr(trace, 'y') and trace.y is not None:
-            y_values.extend([y for y in trace.y if y is not None and not np.isnan(y)])
+    # Calculate axis range for the values (Magnitude)
+    value_data = []
+    is_horizontal = st.session_state.chart_type == 'Horizontal Bar'
     
-    if y_values:
-        y_min = min(y_values)
-        y_max = max(y_values)
-        y_range = y_max - y_min
+    for trace in fig.data:
+        if is_horizontal:
+            # For horizontal bar, values are on X axis
+            if hasattr(trace, 'x') and trace.x is not None:
+                value_data.extend([val for val in trace.x if val is not None and not np.isnan(val)])
+        else:
+            # For vertical charts, values are on Y axis
+            if hasattr(trace, 'y') and trace.y is not None:
+                value_data.extend([val for val in trace.y if val is not None and not np.isnan(val)])
+    
+    if value_data:
+        val_min = min(value_data)
+        val_max = max(value_data)
+        val_range = val_max - val_min
         
         # Ensure minimum range and add padding
-        if abs(y_range) < 1:
-            y_range = 1
+        if abs(val_range) < 1:
+            val_range = 1
         
-        # Add 15% padding on top and bottom
-        padding = y_range * 0.15
-        y_min = y_min - padding
-        y_max = y_max + padding
+        # Add 15% padding
+        padding = val_range * 0.15
+        val_min = val_min - padding
+        val_max = val_max + padding
     else:
-        # Default values if no valid y values
-        y_min = -1
-        y_max = 1
+        val_min = -1
+        val_max = 1
 
-    # Update layout with calculated y-range
-    padding = strike_range * 0.1
+    # Generate custom ticks for value axis
+    tick_vals_formatted = np.linspace(val_min, val_max, 7)
+    tick_text_formatted = [format_large_number(val) for val in tick_vals_formatted]
+
     if st.session_state.chart_type == 'Horizontal Bar':
         fig.update_layout(
             title=dict(
@@ -4748,7 +4761,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 xref="paper",
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 3)  # Title slightly larger
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             xaxis_title=dict(
                 text=f"{title} ({metric_name})",
@@ -4764,14 +4777,17 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
             barmode='relative',
             hovermode='y unified',
             xaxis=dict(
-                autorange=True,
+                range=[val_min, val_max],
+                tickmode='array',
+                tickvals=tick_vals_formatted,
+                ticktext=tick_text_formatted,
                 tickfont=dict(size=st.session_state.chart_text_size)
             ),
             yaxis=dict(
                 autorange=True,
                 tickfont=dict(size=st.session_state.chart_text_size)
             ),
-            height=600  # Increase chart height for better visibility
+            height=600
         )
     else:
         fig.update_layout(
@@ -4780,7 +4796,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 xref="paper",
                 x=0,
                 xanchor='left',
-                font=dict(size=st.session_state.chart_text_size + 3)  # Title slightly larger
+                font=dict(size=st.session_state.chart_text_size + 3)
             ),
             xaxis_title=dict(
                 text='Strike Price',
@@ -4800,7 +4816,10 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 tickfont=dict(size=st.session_state.chart_text_size)
             ),
             yaxis=dict(
-                autorange=True,
+                range=[val_min, val_max],
+                tickmode='array',
+                tickvals=tick_vals_formatted,
+                ticktext=tick_text_formatted,
                 tickfont=dict(size=st.session_state.chart_text_size)
             ),
             height=600  # Increase chart height for better visibility
