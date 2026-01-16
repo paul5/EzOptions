@@ -1451,6 +1451,14 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
     total_put_volume = puts['volume'].sum()
     total_net_volume = total_call_volume - total_put_volume
     
+    # Apply perspective (Dealer = Short, flip the sign of Net values)
+    perspective = st.session_state.get('exposure_perspective', 'Customer')
+    if perspective == 'Dealer':
+        net_oi = net_oi * -1
+        net_volume = net_volume * -1
+        total_net_oi = total_net_oi * -1
+        total_net_volume = total_net_volume * -1
+
     date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
 
     # Determine colors for net values
@@ -2010,6 +2018,12 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
     total_put_volume = puts['volume'].sum()
     total_net_volume = total_call_volume - total_put_volume
     
+    # Apply perspective (Dealer = Short, flip the sign of Net values)
+    perspective = st.session_state.get('exposure_perspective', 'Customer')
+    if perspective == 'Dealer':
+        net_volume = net_volume * -1
+        total_net_volume = total_net_volume * -1
+
     date_suffix = f" ({date_count} dates)" if date_count > 1 else ""
 
     # Determine color for net value
@@ -3944,6 +3958,20 @@ def chart_settings():
             key='chart_text_size'
         )
         
+        # Dashboard layout settings
+        if 'dashboard_charts_per_row' not in st.session_state:
+            st.session_state.dashboard_charts_per_row = 2
+
+        st.number_input(
+            "Dashboard Charts Per Row",
+            min_value=1,
+            max_value=4,
+            value=st.session_state.dashboard_charts_per_row,
+            step=1,
+            help="How many charts to show per row on Dashboard (supplemental charts only)",
+            key='dashboard_charts_per_row'
+        )
+
         st.write("Show/Hide Elements:")
         # Initialize visibility settings if not already set
         if 'show_calls' not in st.session_state:
@@ -5510,8 +5538,22 @@ if st.session_state.current_page == "OI & Volume":
                     total_call_vol = all_calls['volume'].sum()
                     total_put_vol = all_puts['volume'].sum()
                     
+                    # Calculate Net values respecting perspective
+                    perspective = st.session_state.get('exposure_perspective', 'Customer')
+                    net_oi_val = total_call_oi - total_put_oi
+                    net_vol_val = total_call_vol - total_put_vol
+                    
+                    if perspective == 'Dealer':
+                        # Invert Net values for Dealer perspective
+                        net_oi_val = net_oi_val * -1
+                        net_vol_val = net_vol_val * -1
+                    
+                    # Determine colors for Net values
+                    net_oi_color = st.session_state.call_color if net_oi_val >= 0 else st.session_state.put_color
+                    net_vol_color = st.session_state.call_color if net_vol_val >= 0 else st.session_state.put_color
+
                     # Display colorful metrics
-                    m1, m2, m3, m4 = st.columns(4)
+                    m1, m2, m3, m4, m5, m6 = st.columns(6)
                     with m1:
                         st.markdown(f"**Total Call OI**")
                         st.markdown(f"<span style='color:{st.session_state.call_color}; font-size: 20px'>{format_large_number(total_call_oi)}</span>", unsafe_allow_html=True)
@@ -5519,11 +5561,17 @@ if st.session_state.current_page == "OI & Volume":
                         st.markdown(f"**Total Put OI**")
                         st.markdown(f"<span style='color:{st.session_state.put_color}; font-size: 20px'>{format_large_number(total_put_oi)}</span>", unsafe_allow_html=True)
                     with m3:
+                        st.markdown(f"**Net OI**")
+                        st.markdown(f"<span style='color:{net_oi_color}; font-size: 20px'>{format_large_number(net_oi_val)}</span>", unsafe_allow_html=True)
+                    with m4:
                         st.markdown(f"**Total Call Vol**")
                         st.markdown(f"<span style='color:{st.session_state.call_color}; font-size: 20px'>{format_large_number(total_call_vol)}</span>", unsafe_allow_html=True)
-                    with m4:
+                    with m5:
                         st.markdown(f"**Total Put Vol**")
                         st.markdown(f"<span style='color:{st.session_state.put_color}; font-size: 20px'>{format_large_number(total_put_vol)}</span>", unsafe_allow_html=True)
+                    with m6:
+                        st.markdown(f"**Net Volume**")
+                        st.markdown(f"<span style='color:{net_vol_color}; font-size: 20px'>{format_large_number(net_vol_val)}</span>", unsafe_allow_html=True)
                         
                     st.markdown("---")
 
@@ -5641,18 +5689,47 @@ if st.session_state.current_page == "OI & Volume":
                     
                     # Calculate ITM premium flow
                     itm_net_premium = itm_call_premium - itm_put_premium
+                    
+                    # Apply perspective for Net Premium
+                    perspective = st.session_state.get('exposure_perspective', 'Customer')
+                    if perspective == 'Dealer':
+                        itm_net_premium = itm_net_premium * -1
+
+                    # For sentiment and ratios, we might need to be careful.
+                    # If Dealer perspective, we usually invert bullish/bearish signal.
+                    # But ratio logic (Call/Put) is hard to just "invert".
+                    # Let's keep ratio as is (Volume ratio) but invert the Net Premium value which is the main directional "$" metric.
+                    
                     itm_premium_ratio = itm_call_premium / max(itm_put_premium, 1)
                     
                     # Determine ITM premium flow sentiment
-                    if itm_premium_ratio > 1.5:
-                        itm_sentiment = "Bullish"
-                        itm_color = st.session_state.call_color
-                    elif itm_premium_ratio < 0.7:
-                        itm_sentiment = "Bearish"
-                        itm_color = st.session_state.put_color
+                    # For Dealer, high Call/Put ratio (Customer Buying Calls) means Dealer Selling Calls (Bearish Exposure for Dealer)
+                    # So if Dealer, we might want to flip the sentiment label or the ratio interpretation.
+                    
+                    # Sentiment logic:
+                    # Default (Customer): > 1.5 Bullish, < 0.7 Bearish
+                    # Dealer: > 1.5 Bearish (Short Calls), < 0.7 Bullish (Short Puts)
+                    
+                    if perspective == 'Dealer':
+                        if itm_premium_ratio > 1.5:
+                            itm_sentiment = "Bearish (Dealer Short)"
+                            itm_color = st.session_state.put_color
+                        elif itm_premium_ratio < 0.7:
+                            itm_sentiment = "Bullish (Dealer Long)"
+                            itm_color = st.session_state.call_color
+                        else:
+                            itm_sentiment = "Neutral"
+                            itm_color = "white"
                     else:
-                        itm_sentiment = "Neutral"
-                        itm_color = "white"
+                        if itm_premium_ratio > 1.5:
+                            itm_sentiment = "Bullish"
+                            itm_color = st.session_state.call_color
+                        elif itm_premium_ratio < 0.7:
+                            itm_sentiment = "Bearish"
+                            itm_color = st.session_state.put_color
+                        else:
+                            itm_sentiment = "Neutral"
+                            itm_color = "white"
                         
                     # Display premium metrics in a cleaner format with call/put ratio indicator
                     st.markdown("### Premium Summary")
@@ -7272,15 +7349,31 @@ elif st.session_state.current_page == "Dashboard":
                                         call_oi = calls['openInterest'].sum()
                                         put_oi = puts['openInterest'].sum()
                                         
+                                        # Determine Perspective
+                                        perspective = st.session_state.get('exposure_perspective', 'Customer')
+
                                         if put_volume > 0:
                                             cp_volume_ratio = call_volume / put_volume
-                                            cp_ratio_color = st.session_state.call_color if cp_volume_ratio > 1 else st.session_state.put_color
+                                            
+                                            # Determine color based on perspective (Dealer = Usually Inverse Logic for Bullish/Bearish)
+                                            # Customer > 1 (Bullish) -> Green
+                                            # Dealer > 1 (Customer Bullish = Dealer Bearish/Short) -> Red
+                                            if perspective == 'Dealer':
+                                                cp_ratio_color = st.session_state.put_color if cp_volume_ratio > 1 else st.session_state.call_color
+                                            else:
+                                                cp_ratio_color = st.session_state.call_color if cp_volume_ratio > 1 else st.session_state.put_color
+                                                
                                             options_volume_text = f"<span style='color: gray;'>Call Vol:</span> <span style='color: {st.session_state.call_color}'>{call_volume:,.0f}</span> | <span style='color: gray;'>Put Vol:</span> <span style='color: {st.session_state.put_color}'>{put_volume:,.0f}</span>"
                                             call_put_ratio_text = f" | <span style='color: gray;'>C/P Ratio:</span> <span style='color: {cp_ratio_color}'>{cp_volume_ratio:.2f}</span>"
                                         
                                         if put_oi > 0:
                                             cp_oi_ratio = call_oi / put_oi
-                                            oi_ratio_color = st.session_state.call_color if cp_oi_ratio > 1 else st.session_state.put_color
+                                            
+                                            if perspective == 'Dealer':
+                                                oi_ratio_color = st.session_state.put_color if cp_oi_ratio > 1 else st.session_state.call_color
+                                            else:
+                                                oi_ratio_color = st.session_state.call_color if cp_oi_ratio > 1 else st.session_state.put_color
+                                                
                                             call_put_ratio_text += f" | <span style='color: gray;'>OI Ratio:</span> <span style='color: {oi_ratio_color}'>{cp_oi_ratio:.2f}</span>"
                                 except Exception as e:
                                     print(f"Error calculating options stats: {e}")
@@ -7345,9 +7438,13 @@ elif st.session_state.current_page == "Dashboard":
                         if chart in selected_charts:
                             supplemental_charts.append(fig)
                     
-                    for i in range(0, len(supplemental_charts), 2):
-                        cols = st.columns(2)
-                        for j, chart in enumerate(supplemental_charts[i:i+2]):
+                    # Render supplemental charts as an N-column grid.
+                    charts_per_row = int(st.session_state.get('dashboard_charts_per_row', 2) or 2)
+                    charts_per_row = max(1, min(charts_per_row, 4))
+
+                    for i in range(0, len(supplemental_charts), charts_per_row):
+                        cols = st.columns(charts_per_row)
+                        for j, chart in enumerate(supplemental_charts[i:i + charts_per_row]):
                             if chart is not None:
                                 cols[j].plotly_chart(chart, width='stretch')
 
