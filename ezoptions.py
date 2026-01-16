@@ -477,23 +477,10 @@ def fetch_options_for_date(ticker, date, S=None):
                 pass # Date might not exist for this ticker
 
         # Build reference grid from SPX data AND include SPX in the composite
-        grid_strikes = set()
-        try:
-            # Fetch SPX data - use it for both the grid AND include in results
-            spx_c, spx_p = fetch_options_for_date("^SPX", date, spx_price)
-            if not spx_c.empty and 'strike' in spx_c.columns:
-                grid_strikes.update(spx_c['strike'].tolist())
-                calls_list.append(spx_c.copy())  # Include SPX calls
-            if not spx_p.empty and 'strike' in spx_p.columns:
-                grid_strikes.update(spx_p['strike'].tolist())
-                puts_list.append(spx_p.copy())  # Include SPX puts
-        except Exception:
-            pass
+        # EXCLUDED SPX chain info as per request (MARKET ticker only uses ETFs scaled to SPX)
+        pass
             
-        if grid_strikes:
-            spx_strikes_grid = np.array(sorted(list(grid_strikes)))
-        else:
-            spx_strikes_grid = None
+        spx_strikes_grid = None
         
         # Add scaled data from ETFs using moneyness mapping
         if spy_price: add_scaled_data("SPY", spy_price)
