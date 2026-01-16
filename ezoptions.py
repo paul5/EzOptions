@@ -6995,24 +6995,26 @@ elif st.session_state.current_page == "Dashboard":
                             
                             if not atm_call.empty and not atm_put.empty:
                                 # Special handling for MARKET ticker - aggregate across multiple ETF sources
-                                if user_ticker == "MARKET":
-                                    # Volume-weighted average of bid/ask across all ETFs at this strike
-                                    call_total_vol = atm_call['volume'].sum()
-                                    put_total_vol = atm_put['volume'].sum()
-                                    
-                                    if call_total_vol > 0 and put_total_vol > 0:
-                                        # Weight by volume for more accurate market price
-                                        call_bid_weighted = (atm_call['bid'] * atm_call['volume']).sum() / call_total_vol
-                                        call_ask_weighted = (atm_call['ask'] * atm_call['volume']).sum() / call_total_vol
-                                        put_bid_weighted = (atm_put['bid'] * atm_put['volume']).sum() / put_total_vol
-                                        put_ask_weighted = (atm_put['ask'] * atm_put['volume']).sum() / put_total_vol
-                                        
-                                        call_price = (call_bid_weighted + call_ask_weighted) / 2
-                                        put_price = (put_bid_weighted + put_ask_weighted) / 2
+                                if ticker == "MARKET":
+                                    # Volume-weighted call price
+                                    call_vols = atm_call['volume'].fillna(0)
+                                    if call_vols.sum() > 0:
+                                        call_bid = (atm_call['bid'].fillna(0) * call_vols).sum() / call_vols.sum()
+                                        call_ask = (atm_call['ask'].fillna(0) * call_vols).sum() / call_vols.sum()
                                     else:
-                                        # Fallback to simple average if no volume
-                                        call_price = (atm_call['bid'].mean() + atm_call['ask'].mean()) / 2
-                                        put_price = (atm_put['bid'].mean() + atm_put['ask'].mean()) / 2
+                                        call_bid = atm_call['bid'].mean()
+                                        call_ask = atm_call['ask'].mean()
+                                    call_price = (call_bid + call_ask) / 2
+                                    
+                                    # Volume-weighted put price
+                                    put_vols = atm_put['volume'].fillna(0)
+                                    if put_vols.sum() > 0:
+                                        put_bid = (atm_put['bid'].fillna(0) * put_vols).sum() / put_vols.sum()
+                                        put_ask = (atm_put['ask'].fillna(0) * put_vols).sum() / put_vols.sum()
+                                    else:
+                                        put_bid = atm_put['bid'].mean()
+                                        put_ask = atm_put['ask'].mean()
+                                    put_price = (put_bid + put_ask) / 2
                                 else:
                                     # Normal handling for single ticker
                                     call_row = atm_call.iloc[0]
@@ -7024,6 +7026,12 @@ elif st.session_state.current_page == "Dashboard":
                                 
                                 upper_breakeven = atm_strike + straddle_price
                                 lower_breakeven = atm_strike - straddle_price
+
+                                # Round to nearest strike
+                                all_strikes = sorted(set(calls['strike']) | set(puts['strike']))
+                                if all_strikes:
+                                    upper_breakeven = min(all_strikes, key=lambda x: abs(x - upper_breakeven))
+                                    lower_breakeven = min(all_strikes, key=lambda x: abs(x - lower_breakeven))
                                 
                                 # Add Upper Breakeven Line
                                 fig_intraday.add_shape(
@@ -7112,7 +7120,7 @@ elif st.session_state.current_page == "Dashboard":
                                     q_yield = 0
 
                                     # For MARKET ticker, use volume-weighted average of bid/ask
-                                    if user_ticker == "MARKET":
+                                    if ticker == "MARKET":
                                         # Volume-weighted call price
                                         call_vols = atm_call['volume'].fillna(0)
                                         if call_vols.sum() > 0:
@@ -7161,8 +7169,17 @@ elif st.session_state.current_page == "Dashboard":
                                         # 1 SD = Price * IV * sqrt(t)
                                         sd_move = current_price * avg_iv * sqrt(t)
                                         
-                                        upper_sd = current_price + sd_move
-                                        lower_sd = current_price - sd_move
+                                        upper_sd_val = current_price + sd_move
+                                        lower_sd_val = current_price - sd_move
+                                        
+                                        # Round to nearest strike
+                                        all_strikes = sorted(set(calls['strike']) | set(puts['strike']))
+                                        if all_strikes:
+                                            upper_sd = min(all_strikes, key=lambda x: abs(x - upper_sd_val))
+                                            lower_sd = min(all_strikes, key=lambda x: abs(x - lower_sd_val))
+                                        else:
+                                            upper_sd = upper_sd_val
+                                            lower_sd = lower_sd_val
                                         
                                         # Add Upper 1 SD Line
                                         fig_intraday.add_shape(
