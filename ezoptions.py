@@ -4521,8 +4521,11 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     delta_adjusted_label = " (Δ-Adjusted)" if st.session_state.get('delta_adjusted_exposures', False) and exposure_type != 'DEX' else ""
     notional_label = " ($)" if st.session_state.get('calculate_in_notional', True) else ""
     
-    # Determine color for net value
-    net_color = st.session_state.call_color if total_net_value >= 0 else st.session_state.put_color
+    # Determine color for net value based on larger absolute total
+    if abs(total_call_value) >= abs(total_put_value):
+        net_color = st.session_state.call_color
+    else:
+        net_color = st.session_state.put_color
 
     # Update title to include total Greek values with colored values using HTML and metric info
     title_with_totals = (
