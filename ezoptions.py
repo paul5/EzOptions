@@ -447,7 +447,7 @@ def fetch_options_for_date(ticker, date, S=None):
                     # Calculate moneyness (strike / spot) for each ETF option
                     c['moneyness'] = c['strike'] / etf_price
                     # Map to SPX strikes by moneyness: SPX_strike = moneyness * SPX_price
-                    c['strike'] = (c['moneyness'] * spx_price / 5).round() * 5
+                    c['strike'] = (c['moneyness'] * spx_price / 10).round() * 10
                     c.drop(columns=['moneyness'], inplace=True)
                     
                     # Scale prices by price ratio (options are more expensive on higher priced underlyings)
@@ -464,7 +464,7 @@ def fetch_options_for_date(ticker, date, S=None):
                 if not p.empty:
                     p = p.copy()
                     p['moneyness'] = p['strike'] / etf_price
-                    p['strike'] = (p['moneyness'] * spx_price / 5).round() * 5
+                    p['strike'] = (p['moneyness'] * spx_price / 10).round() * 10
                     p.drop(columns=['moneyness'], inplace=True)
                     
                     price_ratio = spx_price / etf_price
@@ -536,7 +536,7 @@ def fetch_all_options(ticker):
                     c = c.copy()
                     # Map by moneyness to SPX strikes
                     c['moneyness'] = c['strike'] / etf_price
-                    c['strike'] = (c['moneyness'] * spx_price / 5).round() * 5
+                    c['strike'] = (c['moneyness'] * spx_price / 10).round() * 10
                     c.drop(columns=['moneyness'], inplace=True)
                     
                     # Scale prices by price ratio
@@ -551,7 +551,7 @@ def fetch_all_options(ticker):
                 if not p.empty:
                     p = p.copy()
                     p['moneyness'] = p['strike'] / etf_price
-                    p['strike'] = (p['moneyness'] * spx_price / 5).round() * 5
+                    p['strike'] = (p['moneyness'] * spx_price / 10).round() * 10
                     p.drop(columns=['moneyness'], inplace=True)
                     
                     price_ratio = spx_price / etf_price
