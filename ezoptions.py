@@ -483,10 +483,10 @@ def fetch_options_for_date(ticker, date, S=None):
             spx_c, spx_p = fetch_options_for_date("^SPX", date, spx_price)
             if not spx_c.empty and 'strike' in spx_c.columns:
                 grid_strikes.update(spx_c['strike'].tolist())
-                calls_list.append(spx_c)  # Include SPX calls
+                calls_list.append(spx_c.copy())  # Include SPX calls
             if not spx_p.empty and 'strike' in spx_p.columns:
                 grid_strikes.update(spx_p['strike'].tolist())
-                puts_list.append(spx_p)  # Include SPX puts
+                puts_list.append(spx_p.copy())  # Include SPX puts
         except Exception:
             pass
             
@@ -579,9 +579,9 @@ def fetch_all_options(ticker):
         try:
             spx_c, spx_p = fetch_all_options("^SPX")
             if not spx_c.empty:
-                calls_list.append(spx_c)
+                calls_list.append(spx_c.copy())
             if not spx_p.empty:
-                puts_list.append(spx_p)
+                puts_list.append(spx_p.copy())
         except:
             pass
         
@@ -604,9 +604,9 @@ def fetch_all_options(ticker):
             try:
                 calls, puts = fetch_options_for_date(ticker, next_exp)
                 if not calls.empty:
-                    all_calls.append(calls)
+                    all_calls.append(calls.copy())
                 if not puts.empty:
-                    all_puts.append(puts)
+                    all_puts.append(puts.copy())
             except Exception as e:
                 st.error(f"Error fetching fallback options data: {e}")
         
@@ -1326,9 +1326,9 @@ def fetch_all_options(ticker):
                     if result:
                         calls, puts = result
                         if not calls.empty:
-                            all_calls.append(calls)
+                            all_calls.append(calls.copy())
                         if not puts.empty:
-                            all_puts.append(puts)
+                            all_puts.append(puts.copy())
                 except Exception as e:
                     print(f"Exception fetching expiry {exp}: {e}")
 
@@ -1339,9 +1339,9 @@ def fetch_all_options(ticker):
             if next_exp:
                 calls, puts = fetch_options_for_date(ticker, next_exp)
                 if not calls.empty:
-                    all_calls.append(calls)
+                    all_calls.append(calls.copy())
                 if not puts.empty:
-                    all_puts.append(puts)
+                    all_puts.append(puts.copy())
         except Exception as e:
             st.error(f"Error fetching fallback options data: {e}")
     
