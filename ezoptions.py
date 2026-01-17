@@ -312,6 +312,13 @@ if 'vix_color' not in st.session_state:
 # -------------------------------
 # Helper Functions
 # -------------------------------
+def hex_to_rgba(hex_color, alpha=1.0):
+    """Convert hex color to rgba string with specified alpha."""
+    hex_color = hex_color.lstrip('#')
+    if len(hex_color) == 3:
+        hex_color = ''.join([c*2 for c in hex_color])
+    return f'rgba({int(hex_color[0:2], 16)}, {int(hex_color[2:4], 16)}, {int(hex_color[4:6], 16)}, {alpha})'
+
 def format_ticker(ticker):
     """Helper function to format tickers for indices"""
     ticker = ticker.upper()
@@ -1466,25 +1473,48 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
         f"<span style='color: {net_volume_color}'>Net: {format_large_number(total_net_volume)}</span> | "
         f"<span style='color: {put_color}'>{format_large_number(total_put_volume)}</span>"
     )
+
+    # Calculate max values for intensity scaling
+    max_oi = 1.0
+    max_vol = 1.0
+    if st.session_state.get('color_by_intensity', False):
+        all_oi = []
+        if not calls_oi_df.empty: all_oi.extend(calls_oi_df['openInterest'].abs().tolist())
+        if not puts_oi_df.empty: all_oi.extend(puts_oi_df['openInterest'].abs().tolist())
+        if all_oi: max_oi = max(all_oi)
+        
+        all_vol = []
+        if not calls_vol_df.empty: all_vol.extend(calls_vol_df['volume'].abs().tolist())
+        if not puts_vol_df.empty: all_vol.extend(puts_vol_df['volume'].abs().tolist())
+        if all_vol: max_vol = max(all_vol)
+
+    def get_colors(base_color, values, max_val):
+        if not st.session_state.get('color_by_intensity', False):
+            return base_color
+        if max_val == 0: return base_color
+        # Convert values to list if it's a series
+        vals = values.tolist() if hasattr(values, 'tolist') else list(values)
+        return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
     
     # Create Open Interest Chart
     fig_oi = go.Figure()
     
     # Add calls if enabled and data exists
     if st.session_state.show_calls and not calls_oi_df.empty:
+        c_colors = get_colors(call_color, calls_oi_df['openInterest'], max_oi)
         if st.session_state.chart_type == 'Bar':
             fig_oi.add_trace(go.Bar(
                 x=calls_oi_df['strike'],
                 y=calls_oi_df['openInterest'],
                 name='Call',
-                marker_color=call_color
+                marker_color=c_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_oi.add_trace(go.Bar(
                 y=calls_oi_df['strike'],
                 x=calls_oi_df['openInterest'],
                 name='Call',
-                marker_color=call_color,
+                marker_color=c_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -1493,7 +1523,7 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
                 y=calls_oi_df['openInterest'],
                 mode='markers',
                 name='Call',
-                marker=dict(color=call_color)
+                marker=dict(color=c_colors)
             ))
         elif st.session_state.chart_type == 'Line':
             fig_oi.add_trace(go.Scatter(
@@ -1516,19 +1546,20 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
 
     # Add puts if enabled and data exists
     if st.session_state.show_puts and not puts_oi_df.empty:
+        p_colors = get_colors(put_color, puts_oi_df['openInterest'], max_oi)
         if st.session_state.chart_type == 'Bar':
             fig_oi.add_trace(go.Bar(
                 x=puts_oi_df['strike'],
                 y=puts_oi_df['openInterest'],
                 name='Put',
-                marker_color=put_color
+                marker_color=p_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_oi.add_trace(go.Bar(
                 y=puts_oi_df['strike'],
                 x=puts_oi_df['openInterest'],
                 name='Put',
-                marker_color=put_color,
+                marker_color=p_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -1537,7 +1568,7 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
                 y=puts_oi_df['openInterest'],
                 mode='markers',
                 name='Put',
-                marker=dict(color=put_color)
+                marker=dict(color=p_colors)
             ))
         elif st.session_state.chart_type == 'Line':
             fig_oi.add_trace(go.Scatter(
@@ -1560,19 +1591,28 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
 
     # Add Net OI if enabled
     if st.session_state.show_net and not net_oi.empty:
+        net_colors = []
+        for val in net_oi.values:
+            base = call_color if val >= 0 else put_color
+            if st.session_state.get('color_by_intensity', False) and max_oi > 0:
+                opacity = 0.3 + 0.7 * (abs(val) / max_oi)
+                net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
+            else:
+                net_colors.append(base)
+
         if st.session_state.chart_type == 'Bar':
             fig_oi.add_trace(go.Bar(
                 x=net_oi.index,
                 y=net_oi.values,
                 name='Net OI',
-                marker_color=[call_color if val >= 0 else put_color for val in net_oi.values]
+                marker_color=net_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_oi.add_trace(go.Bar(
                 y=net_oi.index,
                 x=net_oi.values,
                 name='Net OI',
-                marker_color=[call_color if val >= 0 else put_color for val in net_oi.values],
+                marker_color=net_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
@@ -1580,23 +1620,27 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
             
             # Plot positive values
             if any(positive_mask):
+                pos_vals = net_oi.values[positive_mask]
+                pos_colors = get_colors(call_color, pos_vals, max_oi)
                 fig_oi.add_trace(go.Scatter(
                     x=net_oi.index[positive_mask],
-                    y=net_oi.values[positive_mask],
+                    y=pos_vals,
                     mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
                     name='Net OI (Positive)',
-                    marker=dict(color=call_color) if st.session_state.chart_type == 'Scatter' else None,
+                    marker=dict(color=pos_colors) if st.session_state.chart_type == 'Scatter' else None,
                     line=dict(color=call_color) if st.session_state.chart_type == 'Line' else None
                 ))
             
             # Plot negative values
             if any(~positive_mask):
+                neg_vals = net_oi.values[~positive_mask]
+                neg_colors = get_colors(put_color, neg_vals, max_oi)
                 fig_oi.add_trace(go.Scatter(
                     x=net_oi.index[~positive_mask],
-                    y=net_oi.values[~positive_mask],
+                    y=neg_vals,
                     mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
                     name='Net OI (Negative)',
-                    marker=dict(color=put_color) if st.session_state.chart_type == 'Scatter' else None,
+                    marker=dict(color=neg_colors) if st.session_state.chart_type == 'Scatter' else None,
                     line=dict(color=put_color) if st.session_state.chart_type == 'Line' else None
                 ))
         elif st.session_state.chart_type == 'Area':
@@ -1719,19 +1763,20 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
     
     # Add calls if enabled and data exists
     if st.session_state.show_calls and not calls_vol_df.empty:
+        c_colors = get_colors(call_color, calls_vol_df['volume'], max_vol)
         if st.session_state.chart_type == 'Bar':
             fig_volume.add_trace(go.Bar(
                 x=calls_vol_df['strike'],
                 y=calls_vol_df['volume'],
                 name='Call',
-                marker_color=call_color
+                marker_color=c_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=calls_vol_df['strike'],
                 x=calls_vol_df['volume'],
                 name='Call',
-                marker_color=call_color,
+                marker_color=c_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -1740,7 +1785,7 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
                 y=calls_vol_df['volume'],
                 mode='markers',
                 name='Call',
-                marker=dict(color=call_color)
+                marker=dict(color=c_colors)
             ))
         elif st.session_state.chart_type == 'Line':
             fig_volume.add_trace(go.Scatter(
@@ -1763,19 +1808,20 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
 
     # Add puts if enabled and data exists
     if st.session_state.show_puts and not puts_vol_df.empty:
+        p_colors = get_colors(put_color, puts_vol_df['volume'], max_vol)
         if st.session_state.chart_type == 'Bar':
             fig_volume.add_trace(go.Bar(
                 x=puts_vol_df['strike'],
                 y=puts_vol_df['volume'],
                 name='Put',
-                marker_color=put_color
+                marker_color=p_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=puts_vol_df['strike'],
                 x=puts_vol_df['volume'],
                 name='Put',
-                marker_color=put_color,
+                marker_color=p_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -1784,7 +1830,7 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
                 y=puts_vol_df['volume'],
                 mode='markers',
                 name='Put',
-                marker=dict(color=put_color)
+                marker=dict(color=p_colors)
             ))
         elif st.session_state.chart_type == 'Line':
             fig_volume.add_trace(go.Scatter(
@@ -1807,19 +1853,28 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
 
     # Add Net Volume if enabled
     if st.session_state.show_net and not net_volume.empty:
+        net_colors = []
+        for val in net_volume.values:
+            base = call_color if val >= 0 else put_color
+            if st.session_state.get('color_by_intensity', False) and max_vol > 0:
+                opacity = 0.3 + 0.7 * (abs(val) / max_vol)
+                net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
+            else:
+                net_colors.append(base)
+
         if st.session_state.chart_type == 'Bar':
             fig_volume.add_trace(go.Bar(
                 x=net_volume.index,
                 y=net_volume.values,
                 name='Net Volume',
-                marker_color=[call_color if val >= 0 else put_color for val in net_volume.values]
+                marker_color=net_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=net_volume.index,
                 x=net_volume.values,
                 name='Net Volume',
-                marker_color=[call_color if val >= 0 else put_color for val in net_volume.values],
+                marker_color=net_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
@@ -1827,23 +1882,27 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
             
             # Plot positive values
             if any(positive_mask):
+                pos_vals = net_volume.values[positive_mask]
+                pos_colors = get_colors(call_color, pos_vals, max_vol)
                 fig_volume.add_trace(go.Scatter(
                     x=net_volume.index[positive_mask],
-                    y=net_volume.values[positive_mask],
+                    y=pos_vals,
                     mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
                     name='Net Volume (Positive)',
-                    marker=dict(color=call_color) if st.session_state.chart_type == 'Scatter' else None,
+                    marker=dict(color=pos_colors) if st.session_state.chart_type == 'Scatter' else None,
                     line=dict(color=call_color) if st.session_state.chart_type == 'Line' else None
                 ))
             
             # Plot negative values
             if any(~positive_mask):
+                neg_vals = net_volume.values[~positive_mask]
+                neg_colors = get_colors(put_color, neg_vals, max_vol)
                 fig_volume.add_trace(go.Scatter(
                     x=net_volume.index[~positive_mask],
-                    y=net_volume.values[~positive_mask],
+                    y=neg_vals,
                     mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
                     name='Net Volume (Negative)',
-                    marker=dict(color=put_color) if st.session_state.chart_type == 'Scatter' else None,
+                    marker=dict(color=neg_colors) if st.session_state.chart_type == 'Scatter' else None,
                     line=dict(color=put_color) if st.session_state.chart_type == 'Line' else None
                 ))
         elif st.session_state.chart_type == 'Area':
@@ -2023,25 +2082,42 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
         f"<span style='color: {net_volume_color}'>Net: {format_large_number(total_net_volume)}</span> | "
         f"<span style='color: {put_color}'>{format_large_number(total_put_volume)}</span>"
     )
+
+    # Calculate max values for intensity scaling
+    max_vol = 1.0
+    if st.session_state.get('color_by_intensity', False):
+        all_vol = []
+        if not calls_vol_df.empty: all_vol.extend(calls_vol_df['volume'].abs().tolist())
+        if not puts_vol_df.empty: all_vol.extend(puts_vol_df['volume'].abs().tolist())
+        if all_vol: max_vol = max(all_vol)
+
+    def get_colors(base_color, values, max_val):
+        if not st.session_state.get('color_by_intensity', False):
+            return base_color
+        if max_val == 0: return base_color
+        # Convert values to list if it's a series
+        vals = values.tolist() if hasattr(values, 'tolist') else list(values)
+        return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
     
     # Create Volume Chart
     fig_volume = go.Figure()
     
     # Add calls if enabled and data exists
     if st.session_state.show_calls and not calls_vol_df.empty:
+        c_colors = get_colors(call_color, calls_vol_df['volume'], max_vol)
         if st.session_state.chart_type == 'Bar':
             fig_volume.add_trace(go.Bar(
                 x=calls_vol_df['strike'],
                 y=calls_vol_df['volume'],
                 name='Call',
-                marker_color=call_color
+                marker_color=c_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=calls_vol_df['strike'],
                 x=calls_vol_df['volume'],
                 name='Call',
-                marker_color=call_color,
+                marker_color=c_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -2050,7 +2126,7 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
                 y=calls_vol_df['volume'],
                 mode='markers',
                 name='Call',
-                marker=dict(color=call_color)
+                marker=dict(color=c_colors)
             ))
         elif st.session_state.chart_type == 'Line':
             fig_volume.add_trace(go.Scatter(
@@ -2073,19 +2149,20 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
 
     # Add puts if enabled and data exists
     if st.session_state.show_puts and not puts_vol_df.empty:
+        p_colors = get_colors(put_color, puts_vol_df['volume'], max_vol)
         if st.session_state.chart_type == 'Bar':
             fig_volume.add_trace(go.Bar(
                 x=puts_vol_df['strike'],
                 y=puts_vol_df['volume'],
                 name='Put',
-                marker_color=put_color
+                marker_color=p_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=puts_vol_df['strike'],
                 x=puts_vol_df['volume'],
                 name='Put',
-                marker_color=put_color,
+                marker_color=p_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -2094,7 +2171,7 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
                 y=puts_vol_df['volume'],
                 mode='markers',
                 name='Put',
-                marker=dict(color=put_color)
+                marker=dict(color=p_colors)
             ))
         elif st.session_state.chart_type == 'Line':
             fig_volume.add_trace(go.Scatter(
@@ -2117,19 +2194,28 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
 
     # Add Net Volume if enabled
     if st.session_state.show_net and not net_volume.empty:
+        net_colors = []
+        for val in net_volume.values:
+            base = call_color if val >= 0 else put_color
+            if st.session_state.get('color_by_intensity', False) and max_vol > 0:
+                opacity = 0.3 + 0.7 * (abs(val) / max_vol)
+                net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
+            else:
+                net_colors.append(base)
+
         if st.session_state.chart_type == 'Bar':
             fig_volume.add_trace(go.Bar(
                 x=net_volume.index,
                 y=net_volume.values,
                 name='Net Volume',
-                marker_color=[call_color if val >= 0 else put_color for val in net_volume.values]
+                marker_color=net_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=net_volume.index,
                 x=net_volume.values,
                 name='Net Volume',
-                marker_color=[call_color if val >= 0 else put_color for val in net_volume.values],
+                marker_color=net_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
@@ -2137,23 +2223,27 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
             
             # Plot positive values
             if any(positive_mask):
+                pos_vals = net_volume.values[positive_mask]
+                pos_colors = get_colors(call_color, pos_vals, max_vol)
                 fig_volume.add_trace(go.Scatter(
                     x=net_volume.index[positive_mask],
-                    y=net_volume.values[positive_mask],
+                    y=pos_vals,
                     mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
                     name='Net Volume (Positive)',
-                    marker=dict(color=call_color) if st.session_state.chart_type == 'Scatter' else None,
+                    marker=dict(color=pos_colors) if st.session_state.chart_type == 'Scatter' else None,
                     line=dict(color=call_color) if st.session_state.chart_type == 'Line' else None
                 ))
             
             # Plot negative values
             if any(~positive_mask):
+                neg_vals = net_volume.values[~positive_mask]
+                neg_colors = get_colors(put_color, neg_vals, max_vol)
                 fig_volume.add_trace(go.Scatter(
                     x=net_volume.index[~positive_mask],
-                    y=net_volume.values[~positive_mask],
+                    y=neg_vals,
                     mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
                     name='Net Volume (Negative)',
-                    marker=dict(color=put_color) if st.session_state.chart_type == 'Scatter' else None,
+                    marker=dict(color=neg_colors) if st.session_state.chart_type == 'Scatter' else None,
                     line=dict(color=put_color) if st.session_state.chart_type == 'Line' else None
                 ))
         elif st.session_state.chart_type == 'Area':
@@ -3201,6 +3291,7 @@ def reset_session_state():
         'saved_ticker', 
         'call_color', 
         'put_color',
+        'color_by_intensity',
         'vix_color',
         'show_calls', 
         'show_puts',
@@ -3808,6 +3899,17 @@ def chart_settings():
         st.write("Colors:")
         st.color_picker("Calls", st.session_state.call_color, key='call_color')
         st.color_picker("Puts", st.session_state.put_color, key='put_color')
+
+        # Color by intensity setting
+        if 'color_by_intensity' not in st.session_state:
+            st.session_state.color_by_intensity = False
+        
+        st.checkbox(
+            "Color Bars by Intensity",
+            value=st.session_state.color_by_intensity,
+            key='color_by_intensity',
+            help="If enabled, bar transparency will decrease as the value approaches zero."
+        )
         
         # Add intraday chart type selection
         if 'intraday_chart_type' not in st.session_state:
@@ -4519,6 +4621,24 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
         f"<span style='color: {st.session_state.put_color}'>{format_large_number(total_put_value)}</span>"
     )
 
+    # Calculate max exposure for intensity
+    max_exposure = 1.0
+    if st.session_state.get('color_by_intensity', False):
+         call_vals = calls_df[exposure_type].abs() if not calls_df.empty else []
+         put_vals = puts_df[exposure_type].abs() if not puts_df.empty else []
+         all_vals = []
+         if len(call_vals) > 0: all_vals.extend(call_vals)
+         if len(put_vals) > 0: all_vals.extend(put_vals)
+         if all_vals: max_exposure = max(all_vals)
+    
+    def get_colors(base_color, values, max_val):
+        if not st.session_state.get('color_by_intensity', False):
+            return base_color
+        if max_val == 0: return base_color
+        # Convert to list if series
+        vals = values.tolist() if hasattr(values, 'tolist') else list(values)
+        return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
+
     fig = go.Figure()
 
     # Add Absolute Gamma background if enabled (GEX only)
@@ -4558,19 +4678,20 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
 
     # Add calls if enabled
     if (st.session_state.show_calls):
+        c_colors = get_colors(call_color, calls_df[exposure_type], max_exposure)
         if st.session_state.chart_type == 'Bar':
             fig.add_trace(go.Bar(
                 x=calls_df['strike'],
                 y=calls_df[exposure_type],
                 name='Call',
-                marker_color=call_color
+                marker_color=c_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig.add_trace(go.Bar(
                 y=calls_df['strike'],
                 x=calls_df[exposure_type],
                 name='Call',
-                marker_color=call_color,
+                marker_color=c_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -4579,7 +4700,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 y=calls_df[exposure_type],
                 mode='markers',
                 name='Call',
-                marker=dict(color=call_color)
+                marker=dict(color=c_colors)
             ))
         elif st.session_state.chart_type == 'Line':
             fig.add_trace(go.Scatter(
@@ -4602,19 +4723,20 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
 
     # Add puts if enabled
     if st.session_state.show_puts:
+        p_colors = get_colors(put_color, puts_df[exposure_type], max_exposure)
         if st.session_state.chart_type == 'Bar':
             fig.add_trace(go.Bar(
                 x=puts_df['strike'],
                 y=puts_df[exposure_type],
                 name='Put',
-                marker_color=put_color
+                marker_color=p_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig.add_trace(go.Bar(
                 y=puts_df['strike'],
                 x=puts_df[exposure_type],
                 name='Put',
-                marker_color=put_color,
+                marker_color=p_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -4623,7 +4745,7 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 y=puts_df[exposure_type],
                 mode='markers',
                 name='Put',
-                marker=dict(color=put_color)
+                marker=dict(color=p_colors)
             ))
         elif st.session_state.chart_type == 'Line':
             fig.add_trace(go.Scatter(
@@ -4646,19 +4768,28 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
 
     # Add Net if enabled
     if st.session_state.show_net and not net_exposure.empty:
+        net_colors = []
+        for val in net_exposure.values:
+            base = call_color if val >= 0 else put_color
+            if st.session_state.get('color_by_intensity', False) and max_exposure > 0:
+                opacity = 0.3 + 0.7 * (abs(val) / max_exposure)
+                net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
+            else:
+                net_colors.append(base)
+
         if st.session_state.chart_type == 'Bar':
             fig.add_trace(go.Bar(
                 x=net_exposure.index,
                 y=net_exposure.values,
                 name='Net',
-                marker_color=[call_color if val >= 0 else put_color for val in net_exposure.values]
+                marker_color=net_colors
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig.add_trace(go.Bar(
                 y=net_exposure.index,
                 x=net_exposure.values,
                 name='Net',
-                marker_color=[call_color if val >= 0 else put_color for val in net_exposure.values],
+                marker_color=net_colors,
                 orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
@@ -4666,23 +4797,27 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
             
             # Plot positive values
             if any(positive_mask):
+                pos_vals = net_exposure.values[positive_mask]
+                pos_colors = get_colors(call_color, pos_vals, max_exposure)
                 fig.add_trace(go.Scatter(
                     x=net_exposure.index[positive_mask],
-                    y=net_exposure.values[positive_mask],
+                    y=pos_vals,
                     mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
                     name='Net (Positive)',
-                    marker=dict(color=call_color) if st.session_state.chart_type == 'Scatter' else None,
+                    marker=dict(color=pos_colors) if st.session_state.chart_type == 'Scatter' else None,
                     line=dict(color=call_color) if st.session_state.chart_type == 'Line' else None
                 ))
             
             # Plot negative values
             if any(~positive_mask):
+                neg_vals = net_exposure.values[~positive_mask]
+                neg_colors = get_colors(put_color, neg_vals, max_exposure)
                 fig.add_trace(go.Scatter(
                     x=net_exposure.index[~positive_mask],
-                    y=net_exposure.values[~positive_mask],
+                    y=neg_vals,
                     mode='markers' if st.session_state.chart_type == 'Scatter' else 'lines',
                     name='Net (Negative)',
-                    marker=dict(color=put_color) if st.session_state.chart_type == 'Scatter' else None,
+                    marker=dict(color=neg_colors) if st.session_state.chart_type == 'Scatter' else None,
                     line=dict(color=put_color) if st.session_state.chart_type == 'Line' else None
                 ))
         elif st.session_state.chart_type == 'Area':
