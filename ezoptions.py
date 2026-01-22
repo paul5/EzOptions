@@ -532,12 +532,11 @@ def fetch_options_for_date(ticker, date, S=None):
                     
                     # Scale prices by price ratio (options are more expensive on higher priced underlyings)
                     price_ratio = spx_price / etf_price
+                    c['scale_factor'] = 1.0 / price_ratio
                     for col in ['lastPrice', 'bid', 'ask', 'change']:
                         if col in c.columns:
                             c[col] = c[col] * price_ratio
                     
-                    # Don't scale volume/OI - keep actual liquidity metrics
-                    # This shows true market activity at each moneyness level
                     
                     calls_list.append(c)
                 
@@ -548,6 +547,7 @@ def fetch_options_for_date(ticker, date, S=None):
                     p.drop(columns=['moneyness'], inplace=True)
                     
                     price_ratio = spx_price / etf_price
+                    p['scale_factor'] = 1.0 / price_ratio
                     for col in ['lastPrice', 'bid', 'ask', 'change']:
                         if col in p.columns:
                             p[col] = p[col] * price_ratio
@@ -582,9 +582,11 @@ def fetch_options_for_date(ticker, date, S=None):
         if not calls.empty:
             calls = calls.copy()
             calls['extracted_expiry'] = calls['contractSymbol'].apply(extract_expiry_from_contract)
+            calls['scale_factor'] = 1.0
         if not puts.empty:
             puts = puts.copy()
             puts['extracted_expiry'] = puts['contractSymbol'].apply(extract_expiry_from_contract)
+            puts['scale_factor'] = 1.0
             
         return calls, puts
     except Exception as e:
@@ -621,6 +623,7 @@ def fetch_all_options(ticker):
                     
                     # Scale prices by price ratio
                     price_ratio = spx_price / etf_price
+                    c['scale_factor'] = 1.0 / price_ratio
                     for col in ['lastPrice', 'bid', 'ask', 'change']:
                         if col in c.columns:
                             c[col] = c[col] * price_ratio
@@ -635,24 +638,15 @@ def fetch_all_options(ticker):
                     p.drop(columns=['moneyness'], inplace=True)
                     
                     price_ratio = spx_price / etf_price
+                    p['scale_factor'] = 1.0 / price_ratio
                     for col in ['lastPrice', 'bid', 'ask', 'change']:
                         if col in p.columns:
                             p[col] = p[col] * price_ratio
                     
                     puts_list.append(p)
             except: pass
-
-        # Include SPX native options first
-        try:
-            spx_c, spx_p = fetch_all_options("^SPX")
-            if not spx_c.empty:
-                calls_list.append(spx_c.copy())
-            if not spx_p.empty:
-                puts_list.append(spx_p.copy())
-        except:
-            pass
         
-        # Add scaled ETF data using moneyness mapping
+        # Add scaled ETF data using moneyness mapping (SPX chain excluded - ETFs only)
         if spy_price: process_component("SPY", spy_price)
         if qqq_price: process_component("QQQ", qqq_price)
         if iwm_price: process_component("IWM", iwm_price)
@@ -4415,26 +4409,28 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     # Determine which metric to use based on settings
     metric_type = st.session_state.get('exposure_metric', 'Open Interest')
     
+    # Apply scaling factor (defaults to 1.0 for standard tickers, adjusted for MARKET ETFs)
+    c_scale = calls.get('scale_factor', 1.0)
+    p_scale = puts.get('scale_factor', 1.0)
+    
     if metric_type == 'Volume':
-        calls_metric = calls['volume']
-        puts_metric = puts['volume']
+        calls_metric = calls['volume'] * c_scale
+        puts_metric = puts['volume'] * p_scale
     elif metric_type == 'OI Weighted by Volume':
-        # OI scaled by relative volume activity: OI * (1 + Volume / max(Volume))
-        # This weights OI by how active each strike is relative to the most active strike
-        calls_vol = calls['volume'].fillna(0)
-        puts_vol = puts['volume'].fillna(0)
-        calls_oi = calls['openInterest'].fillna(0)
-        puts_oi = puts['openInterest'].fillna(0)
+        # Scale inputs first
+        calls_vol = calls['volume'].fillna(0) * c_scale
+        puts_vol = puts['volume'].fillna(0) * p_scale
+        calls_oi = calls['openInterest'].fillna(0) * c_scale
+        puts_oi = puts['openInterest'].fillna(0) * p_scale
         
         # Calculate max volume across all options for normalization
         max_vol = max(calls_vol.max(), puts_vol.max(), 1)  # Avoid division by zero
         
-        # OI weighted by relative volume activity (range: OI to 2*OI)
         calls_metric = calls_oi * (1 + calls_vol / max_vol)
         puts_metric = puts_oi * (1 + puts_vol / max_vol)
     else: # Open Interest
-        calls_metric = calls['openInterest']
-        puts_metric = puts['openInterest']
+        calls_metric = calls['openInterest'] * c_scale
+        puts_metric = puts['openInterest'] * p_scale
 
     # Determine if we should calculate in notional (dollars) or underlying units (shares/index units)
     use_notional = st.session_state.get('calculate_in_notional', True)
