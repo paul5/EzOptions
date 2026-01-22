@@ -20,6 +20,76 @@ from datetime import timedelta
 import requests
 import json
 from io import StringIO
+import os
+
+SETTINGS_FILE = 'user_settings.json'
+
+def load_user_settings():
+    """Load settings from JSON file into session state."""
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, 'r') as f:
+                settings = json.load(f)
+                for key, value in settings.items():
+                    if key not in st.session_state:
+                         st.session_state[key] = value
+        except Exception as e:
+            # Silently fail or log error to avoid disrupting UX on startup
+            pass
+
+def save_user_settings():
+    """Save current session state settings to JSON file."""
+    keys_to_save = [
+        'saved_ticker', 
+        'call_color', 
+        'put_color',
+        'color_by_intensity',
+        'vix_color',
+        'show_calls', 
+        'show_puts',
+        'show_net',
+        'strike_range',
+        'chart_type',
+        'chart_text_size',
+        'refresh_rate',
+        'intraday_chart_type',
+        'candlestick_type',
+        'show_vix_overlay',
+        'gex_type',
+        'abs_gex_opacity',
+        'intraday_exposure_levels',
+        'show_straddle',
+        'show_technical_indicators',
+        'selected_indicators',
+        'ema_periods',
+        'sma_periods',
+        'bollinger_period',
+        'bollinger_std',
+        'rsi_period',
+        'fibonacci_levels',
+        'vwap_enabled',
+        'exposure_metric',
+        'exposure_perspective',
+        'delta_adjusted_exposures',
+        'calculate_in_notional',
+        'saved_exposure_heatmap_type',
+        'intraday_level_count',
+        'show_sd_move',
+        'saved_expiry_date'
+    ]
+    
+    settings = {}
+    for key in keys_to_save:
+        if key in st.session_state:
+            settings[key] = st.session_state[key]
+            
+    try:
+        with open(SETTINGS_FILE, 'w') as f:
+            json.dump(settings, f, indent=4)
+        st.toast("Settings saved successfully!", icon="✅")
+    except Exception as e:
+        st.error(f"Error saving settings: {e}")
+
 try:
     from streamlit.runtime.scriptrunner import add_script_run_ctx, get_script_run_ctx
 except ImportError:
@@ -289,6 +359,9 @@ with st_thread_context():
         layout="wide",
         initial_sidebar_state="expanded"
     )
+
+# Load saved settings
+load_user_settings()
 
 # Prevent page dimming during reruns
 st.markdown("<style>.element-container{opacity:1 !important}</style>", unsafe_allow_html=True)
@@ -3840,6 +3913,10 @@ if st.session_state.previous_page != new_page:
 # Add after st.sidebar.title("Navigation")
 def chart_settings():
     with st.sidebar.expander("Chart Settings", expanded=False):
+        # Save Button
+        if st.button("💾 Save Settings", help="Save current settings"):
+            save_user_settings()
+        
         # Greek Exposure Settings - FIRST SETTING
         st.write("Greek Exposure Settings:")
         
