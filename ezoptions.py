@@ -557,8 +557,8 @@ def fetch_options_for_date(ticker, date, S=None):
                 pass # Date might not exist for this ticker
 
         # Build reference grid from SPX data AND include SPX in the composite
-        # EXCLUDED SPX chain info as per request (MARKET ticker only uses ETFs scaled to SPX)
-        pass
+        # Include SPX chain info
+        add_scaled_data("^SPX", spx_price)
             
         spx_strikes_grid = None
         
@@ -646,7 +646,8 @@ def fetch_all_options(ticker):
                     puts_list.append(p)
             except: pass
         
-        # Add scaled ETF data using moneyness mapping (SPX chain excluded - ETFs only)
+        # Add scaled ETF data using moneyness mapping
+        process_component("^SPX", spx_price)
         if spy_price: process_component("SPY", spy_price)
         if qqq_price: process_component("QQQ", qqq_price)
         if iwm_price: process_component("IWM", iwm_price)
@@ -3930,7 +3931,7 @@ def chart_settings():
             options=['Open Interest', 'Volume', 'OI Weighted by Volume'],
             index=['Open Interest', 'Volume', 'OI Weighted by Volume'].index(st.session_state.exposure_metric) if st.session_state.exposure_metric in ['Open Interest', 'Volume', 'OI Weighted by Volume'] else 0,
             key='exposure_metric',
-            help="Open Interest: Use raw OI for exposure calculations.\nVolume: Use today's volume only.\nOI Weighted by Volume: OI × (1 + Volume/MaxVolume) - Weights OI by relative trading activity."
+            help="Open Interest: Use raw OI for exposure calculations.\nVolume: Use today's volume only.\nOI Weighted by Volume: Geometric Mean: sqrt(OI * Volume) - Weights OI by relative trading activity."
         )
 
         # Initialize perspective setting
@@ -4417,17 +4418,14 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
         calls_metric = calls['volume'] * c_scale
         puts_metric = puts['volume'] * p_scale
     elif metric_type == 'OI Weighted by Volume':
-        # Scale inputs first
+        # Geometric Mean: sqrt(OI * Volume)
         calls_vol = calls['volume'].fillna(0) * c_scale
         puts_vol = puts['volume'].fillna(0) * p_scale
         calls_oi = calls['openInterest'].fillna(0) * c_scale
         puts_oi = puts['openInterest'].fillna(0) * p_scale
         
-        # Calculate max volume across all options for normalization
-        max_vol = max(calls_vol.max(), puts_vol.max(), 1)  # Avoid division by zero
-        
-        calls_metric = calls_oi * (1 + calls_vol / max_vol)
-        puts_metric = puts_oi * (1 + puts_vol / max_vol)
+        calls_metric = np.sqrt(calls_oi * calls_vol)
+        puts_metric = np.sqrt(puts_oi * puts_vol)
     else: # Open Interest
         calls_metric = calls['openInterest'] * c_scale
         puts_metric = puts['openInterest'] * p_scale
@@ -5369,14 +5367,14 @@ def create_davi_chart(calls, puts, S, date_count=1):
         calls_metric = calls_df['volume'].fillna(0)
         puts_metric = puts_df['volume'].fillna(0)
     elif metric_type == 'OI Weighted by Volume':
-        # OI scaled by relative volume activity: OI * (1 + Volume / max(Volume))
+        # Geometric Mean: sqrt(OI * Volume)
         calls_vol = calls_df['volume'].fillna(0)
         puts_vol = puts_df['volume'].fillna(0)
         calls_oi = calls_df['openInterest'].fillna(0)
         puts_oi = puts_df['openInterest'].fillna(0)
-        max_vol = max(calls_vol.max(), puts_vol.max(), 1)
-        calls_metric = calls_oi * (1 + calls_vol / max_vol)
-        puts_metric = puts_oi * (1 + puts_vol / max_vol)
+        
+        calls_metric = np.sqrt(calls_oi * calls_vol)
+        puts_metric = np.sqrt(puts_oi * puts_vol)
     else: # Open Interest
         calls_metric = calls_df['openInterest'].fillna(0)
         puts_metric = puts_df['openInterest'].fillna(0)
