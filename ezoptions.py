@@ -74,6 +74,8 @@ def save_user_settings():
         'calculate_in_notional',
         'saved_exposure_heatmap_type',
         'intraday_level_count',
+        'highlight_highest_exposure',
+        'highlight_color',
         'show_sd_move',
         'saved_expiry_date'
     ]
@@ -381,6 +383,10 @@ if 'put_color' not in st.session_state:
     st.session_state.put_color = '#FF0000'   # Default red for puts
 if 'vix_color' not in st.session_state:
     st.session_state.vix_color = '#800080'   # Default purple for VIXY
+if 'highlight_highest_exposure' not in st.session_state:
+    st.session_state.highlight_highest_exposure = False
+if 'highlight_color' not in st.session_state:
+    st.session_state.highlight_color = '#BF40BF'  # Default purple
 
 # -------------------------------
 # Helper Functions
@@ -513,62 +519,122 @@ def fetch_options_for_date(ticker, date, S=None):
              if not spx_price:
                  return pd.DataFrame(), pd.DataFrame()
         
+        # First, fetch SPX options to get the actual strike grid
+        spx_calls, spx_puts = fetch_options_for_date("^SPX", date, spx_price)
+        if spx_calls.empty and spx_puts.empty:
+            return pd.DataFrame(), pd.DataFrame()
+        
+        # Build the SPX strike grid (union of calls and puts strikes)
+        spx_strikes = np.array(sorted(set(
+            list(spx_calls['strike'].unique() if not spx_calls.empty else []) + 
+            list(spx_puts['strike'].unique() if not spx_puts.empty else [])
+        )))
+        
+        if len(spx_strikes) == 0:
+            return pd.DataFrame(), pd.DataFrame()
+        
         calls_list = []
         puts_list = []
+        component_count = 0
         
-        # Helper to fetch and scale by moneyness
-        def add_scaled_data(tick, etf_price):
+        def find_nearest_spx_strike(etf_strike, etf_price):
+            """Map ETF strike to nearest SPX strike by moneyness"""
+            etf_moneyness = etf_strike / etf_price
+            target_spx_strike = etf_moneyness * spx_price
+            # Find nearest actual SPX strike
+            idx = np.abs(spx_strikes - target_spx_strike).argmin()
+            return spx_strikes[idx]
+        
+        # Helper to fetch, normalize to percentage, and map to SPX strikes
+        def add_normalized_data(tick, etf_price, is_spx=False):
+            nonlocal component_count
             try:
-                # Fetch ETF options
-                c, p = fetch_options_for_date(tick, date, etf_price)
+                if is_spx:
+                    # Use already fetched SPX data
+                    c, p = spx_calls.copy(), spx_puts.copy()
+                else:
+                    # Fetch ETF options
+                    c, p = fetch_options_for_date(tick, date, etf_price)
+                
+                # Calculate total OI/Volume for this component (for percentage normalization)
+                c_total_oi = c['openInterest'].sum() if not c.empty and 'openInterest' in c.columns else 0
+                c_total_vol = c['volume'].sum() if not c.empty and 'volume' in c.columns else 0
+                p_total_oi = p['openInterest'].sum() if not p.empty and 'openInterest' in p.columns else 0
+                p_total_vol = p['volume'].sum() if not p.empty and 'volume' in p.columns else 0
                 
                 if not c.empty:
                     c = c.copy()
-                    # Calculate moneyness (strike / spot) for each ETF option
-                    c['moneyness'] = c['strike'] / etf_price
-                    # Map to SPX strikes by moneyness: SPX_strike = moneyness * SPX_price
-                    c['strike'] = (c['moneyness'] * spx_price / 10).round() * 10
-                    c.drop(columns=['moneyness'], inplace=True)
                     
-                    # Scale prices by price ratio (options are more expensive on higher priced underlyings)
-                    price_ratio = spx_price / etf_price
-                    c['scale_factor'] = 1.0 / price_ratio
-                    for col in ['lastPrice', 'bid', 'ask', 'change']:
-                        if col in c.columns:
-                            c[col] = c[col] * price_ratio
+                    # For ETFs: Pre-calculate IV using ORIGINAL ETF values before strike mapping
+                    # IV is scale-independent - transfers directly to SPX equivalent
+                    if not is_spx and 'impliedVolatility' not in c.columns:
+                        # Calculate mid price for IV
+                        c['_mid'] = (c['bid'].fillna(0) + c['ask'].fillna(0)) / 2
+                        # IV will be calculated downstream using yfinance IV or recalculated
                     
+                    if not is_spx:
+                        # Store original ETF strike for reference before mapping
+                        c['_original_strike'] = c['strike']
+                        c['_original_spot'] = etf_price
+                        # Map ETF strikes to nearest SPX strikes by moneyness
+                        c['strike'] = c['strike'].apply(lambda x: find_nearest_spx_strike(x, etf_price))
+                    
+                    # DO NOT scale prices - IV from yfinance is already correct
+                    # Greeks will be calculated using IV directly (not from scaled prices)
+                    c['scale_factor'] = 1.0
+                    
+                    # Normalize OI and Volume to percentage of component total
+                    # Then scale to a common reference (1M contracts equivalent)
+                    reference_scale = 1_000_000
+                    if 'openInterest' in c.columns and c_total_oi > 0:
+                        c['openInterest'] = (c['openInterest'] / c_total_oi) * reference_scale
+                    if 'volume' in c.columns and c_total_vol > 0:
+                        c['volume'] = (c['volume'] / c_total_vol) * reference_scale
                     
                     calls_list.append(c)
                 
                 if not p.empty:
                     p = p.copy()
-                    p['moneyness'] = p['strike'] / etf_price
-                    p['strike'] = (p['moneyness'] * spx_price / 10).round() * 10
-                    p.drop(columns=['moneyness'], inplace=True)
                     
-                    price_ratio = spx_price / etf_price
-                    p['scale_factor'] = 1.0 / price_ratio
-                    for col in ['lastPrice', 'bid', 'ask', 'change']:
-                        if col in p.columns:
-                            p[col] = p[col] * price_ratio
+                    # For ETFs: Pre-calculate IV using ORIGINAL ETF values before strike mapping
+                    if not is_spx and 'impliedVolatility' not in p.columns:
+                        p['_mid'] = (p['bid'].fillna(0) + p['ask'].fillna(0)) / 2
+                    
+                    if not is_spx:
+                        # Store original ETF strike for reference before mapping
+                        p['_original_strike'] = p['strike']
+                        p['_original_spot'] = etf_price
+                        # Map ETF strikes to nearest SPX strikes by moneyness
+                        p['strike'] = p['strike'].apply(lambda x: find_nearest_spx_strike(x, etf_price))
+                    
+                    # DO NOT scale prices - IV from yfinance is already correct
+                    p['scale_factor'] = 1.0
+                    
+                    # Normalize OI and Volume to percentage of component total
+                    reference_scale = 1_000_000
+                    if 'openInterest' in p.columns and p_total_oi > 0:
+                        p['openInterest'] = (p['openInterest'] / p_total_oi) * reference_scale
+                    if 'volume' in p.columns and p_total_vol > 0:
+                        p['volume'] = (p['volume'] / p_total_vol) * reference_scale
                     
                     puts_list.append(p)
+                
+                component_count += 1
             except Exception:
                 pass # Date might not exist for this ticker
 
-        # Build reference grid from SPX data AND include SPX in the composite
-        # Include SPX chain info
-        add_scaled_data("^SPX", spx_price)
-            
-        spx_strikes_grid = None
-        
-        # Add scaled data from ETFs using moneyness mapping
-        if spy_price: add_scaled_data("SPY", spy_price)
-        if qqq_price: add_scaled_data("QQQ", qqq_price)
-        if iwm_price: add_scaled_data("IWM", iwm_price)
+        # Add SPX first (using already fetched data)
+        add_normalized_data("^SPX", spx_price, is_spx=True)
+        # Add other products, mapping to SPX strike grid
+        if spy_price: add_normalized_data("SPY", spy_price)
+        if qqq_price: add_normalized_data("QQQ", qqq_price)
+        if iwm_price: add_normalized_data("IWM", iwm_price)
         
         combined_calls = pd.concat(calls_list, ignore_index=True) if calls_list else pd.DataFrame()
         combined_puts = pd.concat(puts_list, ignore_index=True) if puts_list else pd.DataFrame()
+        
+        # After aggregation by strike, the data naturally sums at SPX strikes
+        # Each component contributes equally regardless of absolute size
         
         return combined_calls, combined_puts
 
@@ -606,54 +672,108 @@ def fetch_all_options(ticker):
         qqq_price = get_current_price("QQQ") 
         iwm_price = get_current_price("IWM")
         
+        # First, fetch SPX options to get the actual strike grid
+        spx_calls, spx_puts = fetch_all_options("^SPX")
+        if spx_calls.empty and spx_puts.empty:
+            return pd.DataFrame(), pd.DataFrame()
+        
+        # Build the SPX strike grid (union of calls and puts strikes)
+        spx_strikes = np.array(sorted(set(
+            list(spx_calls['strike'].unique() if not spx_calls.empty else []) + 
+            list(spx_puts['strike'].unique() if not spx_puts.empty else [])
+        )))
+        
+        if len(spx_strikes) == 0:
+            return pd.DataFrame(), pd.DataFrame()
+        
         calls_list = []
         puts_list = []
+        component_count = 0
         
-        # Helper to fetch and scale by moneyness
-        def process_component(tick, etf_price):
+        def find_nearest_spx_strike(etf_strike, etf_price):
+            """Map ETF strike to nearest SPX strike by moneyness"""
+            etf_moneyness = etf_strike / etf_price
+            target_spx_strike = etf_moneyness * spx_price
+            # Find nearest actual SPX strike
+            idx = np.abs(spx_strikes - target_spx_strike).argmin()
+            return spx_strikes[idx]
+        
+        # Helper to fetch, normalize to percentage, and map to SPX strikes
+        def process_component(tick, etf_price, is_spx=False):
+            nonlocal component_count
             try:
-                c, p = fetch_all_options(tick)
+                if is_spx:
+                    # Use already fetched SPX data
+                    c, p = spx_calls.copy(), spx_puts.copy()
+                else:
+                    c, p = fetch_all_options(tick)
+                
+                # Calculate total OI/Volume for this component (for percentage normalization)
+                c_total_oi = c['openInterest'].sum() if not c.empty and 'openInterest' in c.columns else 0
+                c_total_vol = c['volume'].sum() if not c.empty and 'volume' in c.columns else 0
+                p_total_oi = p['openInterest'].sum() if not p.empty and 'openInterest' in p.columns else 0
+                p_total_vol = p['volume'].sum() if not p.empty and 'volume' in p.columns else 0
                 
                 if not c.empty:
                     c = c.copy()
-                    # Map by moneyness to SPX strikes
-                    c['moneyness'] = c['strike'] / etf_price
-                    c['strike'] = (c['moneyness'] * spx_price / 10).round() * 10
-                    c.drop(columns=['moneyness'], inplace=True)
                     
-                    # Scale prices by price ratio
-                    price_ratio = spx_price / etf_price
-                    c['scale_factor'] = 1.0 / price_ratio
-                    for col in ['lastPrice', 'bid', 'ask', 'change']:
-                        if col in c.columns:
-                            c[col] = c[col] * price_ratio
+                    if not is_spx:
+                        # Store original ETF strike for reference before mapping
+                        c['_original_strike'] = c['strike']
+                        c['_original_spot'] = etf_price
+                        # Map ETF strikes to nearest SPX strikes by moneyness
+                        c['strike'] = c['strike'].apply(lambda x: find_nearest_spx_strike(x, etf_price))
                     
-                    # Keep volume/OI unscaled (true market activity)
+                    # DO NOT scale prices - IV from yfinance is already correct
+                    # Greeks will be calculated using IV directly (not from scaled prices)
+                    c['scale_factor'] = 1.0
+                    
+                    # Normalize OI and Volume to percentage of component total
+                    # Then scale to a common reference (1M contracts equivalent)
+                    reference_scale = 1_000_000
+                    if 'openInterest' in c.columns and c_total_oi > 0:
+                        c['openInterest'] = (c['openInterest'] / c_total_oi) * reference_scale
+                    if 'volume' in c.columns and c_total_vol > 0:
+                        c['volume'] = (c['volume'] / c_total_vol) * reference_scale
                     
                     calls_list.append(c)
                 if not p.empty:
                     p = p.copy()
-                    p['moneyness'] = p['strike'] / etf_price
-                    p['strike'] = (p['moneyness'] * spx_price / 10).round() * 10
-                    p.drop(columns=['moneyness'], inplace=True)
                     
-                    price_ratio = spx_price / etf_price
-                    p['scale_factor'] = 1.0 / price_ratio
-                    for col in ['lastPrice', 'bid', 'ask', 'change']:
-                        if col in p.columns:
-                            p[col] = p[col] * price_ratio
+                    if not is_spx:
+                        # Store original ETF strike for reference before mapping
+                        p['_original_strike'] = p['strike']
+                        p['_original_spot'] = etf_price
+                        # Map ETF strikes to nearest SPX strikes by moneyness
+                        p['strike'] = p['strike'].apply(lambda x: find_nearest_spx_strike(x, etf_price))
+                    
+                    # DO NOT scale prices - IV from yfinance is already correct
+                    p['scale_factor'] = 1.0
+                    
+                    # Normalize OI and Volume to percentage of component total
+                    reference_scale = 1_000_000
+                    if 'openInterest' in p.columns and p_total_oi > 0:
+                        p['openInterest'] = (p['openInterest'] / p_total_oi) * reference_scale
+                    if 'volume' in p.columns and p_total_vol > 0:
+                        p['volume'] = (p['volume'] / p_total_vol) * reference_scale
                     
                     puts_list.append(p)
+                
+                component_count += 1
             except: pass
         
-        # Add scaled ETF data using moneyness mapping
-        process_component("^SPX", spx_price)
+        # Add SPX first (using already fetched data)
+        process_component("^SPX", spx_price, is_spx=True)
+        # Add other products, mapping to SPX strike grid
         if spy_price: process_component("SPY", spy_price)
         if qqq_price: process_component("QQQ", qqq_price)
         if iwm_price: process_component("IWM", iwm_price)
         
         combined_calls = pd.concat(calls_list, ignore_index=True) if calls_list else pd.DataFrame()
         combined_puts = pd.concat(puts_list, ignore_index=True) if puts_list else pd.DataFrame()
+        
+        # After aggregation by strike, the data naturally sums at SPX strikes
+        # Each component contributes equally regardless of absolute size
         
         return combined_calls, combined_puts
 
@@ -686,6 +806,11 @@ def fetch_all_options(ticker):
         st.error(f"Error fetching all options: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
+def get_chart_key(base_key):
+    """Generate a unique chart key that includes the page render ID to prevent cross-page caching"""
+    render_id = st.session_state.get('page_render_id', 0)
+    return f"{base_key}_{render_id}"
+
 def clear_page_state():
     """Clear all page-specific content and containers"""
     # Clear containers stored in session state
@@ -697,11 +822,19 @@ def clear_page_state():
                 pass
 
     for key in list(st.session_state.keys()):
-        if key.startswith(('container_', 'chart_', 'table_', 'page_')):
+        if key.startswith(('container_', 'chart_', 'table_', 'page_', 'mt_chart_')):
             del st.session_state[key]
     
     if 'current_page_container' in st.session_state:
         del st.session_state['current_page_container']
+    
+    # Clear any main placeholder references
+    if 'main_placeholder' in st.session_state:
+        try:
+            st.session_state['main_placeholder'].empty()
+        except:
+            pass
+        del st.session_state['main_placeholder']
     
     st.empty()
 
@@ -1542,19 +1675,23 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
         f"<span style='color: {put_color}'>{format_large_number(total_put_volume)}</span>"
     )
 
-    # Calculate max values for intensity scaling
+    # Calculate max values for intensity scaling and highlighting
     max_oi = 1.0
+    all_oi = []
+    if not calls_oi_df.empty: all_oi.extend(calls_oi_df['openInterest'].abs().tolist())
+    if not puts_oi_df.empty: all_oi.extend(puts_oi_df['openInterest'].abs().tolist())
+    if st.session_state.show_net and not net_oi.empty: all_oi.extend(net_oi.abs().tolist())
+    if all_oi: max_oi = max(all_oi)
+    
     max_vol = 1.0
-    if st.session_state.get('color_by_intensity', False):
-        all_oi = []
-        if not calls_oi_df.empty: all_oi.extend(calls_oi_df['openInterest'].abs().tolist())
-        if not puts_oi_df.empty: all_oi.extend(puts_oi_df['openInterest'].abs().tolist())
-        if all_oi: max_oi = max(all_oi)
-        
-        all_vol = []
-        if not calls_vol_df.empty: all_vol.extend(calls_vol_df['volume'].abs().tolist())
-        if not puts_vol_df.empty: all_vol.extend(puts_vol_df['volume'].abs().tolist())
-        if all_vol: max_vol = max(all_vol)
+    all_vol = []
+    if not calls_vol_df.empty: all_vol.extend(calls_vol_df['volume'].abs().tolist())
+    if not puts_vol_df.empty: all_vol.extend(puts_vol_df['volume'].abs().tolist())
+    if st.session_state.show_net and not net_volume.empty: all_vol.extend(net_volume.abs().tolist())
+    if all_vol: max_vol = max(all_vol)
+
+    global_max_oi = max_oi if st.session_state.get('highlight_highest_exposure', False) else None
+    global_max_vol = max_vol if st.session_state.get('highlight_highest_exposure', False) else None
 
     def get_colors(base_color, values, max_val):
         if not st.session_state.get('color_by_intensity', False):
@@ -1563,6 +1700,14 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
         # Convert values to list if it's a series
         vals = values.tolist() if hasattr(values, 'tolist') else list(values)
         return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
+    
+    def get_marker_line(values, max_val):
+        """Helper to get marker line properties for highlighting highest value. (OI/Vol)"""
+        if max_val is None or max_val == 0 or st.session_state.chart_type not in ['Bar', 'Horizontal Bar']:
+            return dict(width=0)
+        vals = values.tolist() if hasattr(values, 'tolist') else list(values)
+        widths = [4 if abs(v) == max_val else 0 for v in vals]
+        return dict(color=st.session_state.get('highlight_color', '#BF40BF'), width=widths)
     
     # Create Open Interest Chart
     fig_oi = go.Figure()
@@ -1575,14 +1720,14 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
                 x=calls_oi_df['strike'],
                 y=calls_oi_df['openInterest'],
                 name='Call',
-                marker_color=c_colors
+                marker=dict(color=c_colors, line=get_marker_line(calls_oi_df['openInterest'], global_max_oi))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_oi.add_trace(go.Bar(
                 y=calls_oi_df['strike'],
                 x=calls_oi_df['openInterest'],
                 name='Call',
-                marker_color=c_colors,
+                marker=dict(color=c_colors, line=get_marker_line(calls_oi_df['openInterest'], global_max_oi)),
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -1620,14 +1765,14 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
                 x=puts_oi_df['strike'],
                 y=puts_oi_df['openInterest'],
                 name='Put',
-                marker_color=p_colors
+                marker=dict(color=p_colors, line=get_marker_line(puts_oi_df['openInterest'], global_max_oi))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_oi.add_trace(go.Bar(
                 y=puts_oi_df['strike'],
                 x=puts_oi_df['openInterest'],
                 name='Put',
-                marker_color=p_colors,
+                marker=dict(color=p_colors, line=get_marker_line(puts_oi_df['openInterest'], global_max_oi)),
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -1673,14 +1818,14 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
                 x=net_oi.index,
                 y=net_oi.values,
                 name='Net OI',
-                marker_color=net_colors
+                marker=dict(color=net_colors, line=get_marker_line(net_oi, global_max_oi))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_oi.add_trace(go.Bar(
                 y=net_oi.index,
                 x=net_oi.values,
                 name='Net OI',
-                marker_color=net_colors,
+                marker=dict(color=net_colors, line=get_marker_line(net_oi, global_max_oi)),
                 orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
@@ -1837,14 +1982,14 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
                 x=calls_vol_df['strike'],
                 y=calls_vol_df['volume'],
                 name='Call',
-                marker_color=c_colors
+                marker=dict(color=c_colors, line=get_marker_line(calls_vol_df['volume'], global_max_vol))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=calls_vol_df['strike'],
                 x=calls_vol_df['volume'],
                 name='Call',
-                marker_color=c_colors,
+                marker=dict(color=c_colors, line=get_marker_line(calls_vol_df['volume'], global_max_vol)),
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -1882,14 +2027,14 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
                 x=puts_vol_df['strike'],
                 y=puts_vol_df['volume'],
                 name='Put',
-                marker_color=p_colors
+                marker=dict(color=p_colors, line=get_marker_line(puts_vol_df['volume'], global_max_vol))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=puts_vol_df['strike'],
                 x=puts_vol_df['volume'],
                 name='Put',
-                marker_color=p_colors,
+                marker=dict(color=p_colors, line=get_marker_line(puts_vol_df['volume'], global_max_vol)),
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -1935,14 +2080,14 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
                 x=net_volume.index,
                 y=net_volume.values,
                 name='Net Volume',
-                marker_color=net_colors
+                marker=dict(color=net_colors, line=get_marker_line(net_volume, global_max_vol))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=net_volume.index,
                 x=net_volume.values,
                 name='Net Volume',
-                marker_color=net_colors,
+                marker=dict(color=net_colors, line=get_marker_line(net_volume, global_max_vol)),
                 orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
@@ -2151,13 +2296,15 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
         f"<span style='color: {put_color}'>{format_large_number(total_put_volume)}</span>"
     )
 
-    # Calculate max values for intensity scaling
+    # Calculate max values for intensity scaling and highlighting
     max_vol = 1.0
-    if st.session_state.get('color_by_intensity', False):
-        all_vol = []
-        if not calls_vol_df.empty: all_vol.extend(calls_vol_df['volume'].abs().tolist())
-        if not puts_vol_df.empty: all_vol.extend(puts_vol_df['volume'].abs().tolist())
-        if all_vol: max_vol = max(all_vol)
+    all_vol = []
+    if not calls_vol_df.empty: all_vol.extend(calls_vol_df['volume'].abs().tolist())
+    if not puts_vol_df.empty: all_vol.extend(puts_vol_df['volume'].abs().tolist())
+    if st.session_state.show_net and not net_volume.empty: all_vol.extend(net_volume.abs().tolist())
+    if all_vol: max_vol = max(all_vol)
+
+    global_max_vol = max_vol if st.session_state.get('highlight_highest_exposure', False) else None
 
     def get_colors(base_color, values, max_val):
         if not st.session_state.get('color_by_intensity', False):
@@ -2166,6 +2313,14 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
         # Convert values to list if it's a series
         vals = values.tolist() if hasattr(values, 'tolist') else list(values)
         return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
+    
+    def get_marker_line(values, max_val):
+        """Helper to get marker line properties for highlighting highest value. (Standalone Vol)"""
+        if max_val is None or max_val == 0 or st.session_state.chart_type not in ['Bar', 'Horizontal Bar']:
+            return dict(width=0)
+        vals = values.tolist() if hasattr(values, 'tolist') else list(values)
+        widths = [4 if abs(v) == max_val else 0 for v in vals]
+        return dict(color=st.session_state.get('highlight_color', '#BF40BF'), width=widths)
     
     # Create Volume Chart
     fig_volume = go.Figure()
@@ -2178,14 +2333,14 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
                 x=calls_vol_df['strike'],
                 y=calls_vol_df['volume'],
                 name='Call',
-                marker_color=c_colors
+                marker=dict(color=c_colors, line=get_marker_line(calls_vol_df['volume'], global_max_vol))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=calls_vol_df['strike'],
                 x=calls_vol_df['volume'],
                 name='Call',
-                marker_color=c_colors,
+                marker=dict(color=c_colors, line=get_marker_line(calls_vol_df['volume'], global_max_vol)),
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -2223,14 +2378,14 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
                 x=puts_vol_df['strike'],
                 y=puts_vol_df['volume'],
                 name='Put',
-                marker_color=p_colors
+                marker=dict(color=p_colors, line=get_marker_line(puts_vol_df['volume'], global_max_vol))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=puts_vol_df['strike'],
                 x=puts_vol_df['volume'],
                 name='Put',
-                marker_color=p_colors,
+                marker=dict(color=p_colors, line=get_marker_line(puts_vol_df['volume'], global_max_vol)),
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -2276,14 +2431,14 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
                 x=net_volume.index,
                 y=net_volume.values,
                 name='Net Volume',
-                marker_color=net_colors
+                marker=dict(color=net_colors, line=get_marker_line(net_volume, global_max_vol))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig_volume.add_trace(go.Bar(
                 y=net_volume.index,
                 x=net_volume.values,
                 name='Net Volume',
-                marker_color=net_colors,
+                marker=dict(color=net_colors, line=get_marker_line(net_volume, global_max_vol)),
                 orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
@@ -3391,6 +3546,8 @@ def reset_session_state():
         'global_selected_expiries',
         'saved_exposure_heatmap_type',
         'intraday_level_count',
+        'highlight_highest_exposure',
+        'highlight_color',
         'show_sd_move'
     }
     
@@ -3501,9 +3658,13 @@ def handle_page_change(new_page):
     """Handle page navigation and state management"""
     if 'current_page' not in st.session_state:
         st.session_state.current_page = new_page
+        st.session_state.page_render_id = 0
         return True
     
     if st.session_state.current_page != new_page:
+        # Increment page render ID to force new widget keys
+        st.session_state.page_render_id = st.session_state.get('page_render_id', 0) + 1
+        
         # Clear page-specific widget state to force default reload
         old_widget_key = f"{st.session_state.current_page}_expiry_selector"
         if old_widget_key in st.session_state:
@@ -3512,8 +3673,31 @@ def handle_page_change(new_page):
         if 'expiry_selector_container' in st.session_state:
             st.session_state.expiry_selector_container.empty()
         
+        # Clear main placeholder if it exists
+        if 'main_placeholder' in st.session_state:
+            try:
+                st.session_state['main_placeholder'].empty()
+            except:
+                pass
+        
         # Clear previous page state
         clear_page_state()
+        
+        # Aggressively clear ALL chart-related keys from ALL pages to prevent leakage
+        chart_prefixes = (
+            'mt_chart_', 'dashboard_', 'db_chart_', 'intraday_', 
+            'chart_', 'fig_', 'plotly_', 'gamma_chart_', 'delta_chart_',
+            'vanna_chart_', 'charm_chart_', 'speed_chart_', 'vomma_chart_',
+            'color_chart_', 'gex_chart_', 'dex_chart_', 'vex_chart_',
+            'exposure_chart_', 'surface_chart_', 'heatmap_chart_',
+            'max_pain_chart_', 'iv_chart_', 'analysis_chart_', 'prob_chart_'
+        )
+        for key in list(st.session_state.keys()):
+            if key.startswith(chart_prefixes):
+                del st.session_state[key]
+        
+        # Clear Streamlit's internal chart cache
+        st.cache_data.clear()
         
         st.session_state.current_page = new_page
         reset_session_state()
@@ -3850,6 +4034,7 @@ st.sidebar.title("📊 Navigation")
 # Define pages with their corresponding icons
 page_icons = {
     "Dashboard": "🏠",
+    "Multi-Ticker View": "🖼️",
     "OI & Volume": "📈", 
     "Gamma Exposure": "🔺",
     "Delta Exposure": "📊",
@@ -3867,7 +4052,7 @@ page_icons = {
     "Analysis": "🔍"
 }
 
-pages = ["Dashboard", "OI & Volume", "Gamma Exposure", "Delta Exposure", 
+pages = ["Dashboard", "Multi-Ticker View", "OI & Volume", "Gamma Exposure", "Delta Exposure", 
           "Vanna Exposure", "Charm Exposure", "Speed Exposure", "Vomma Exposure", "Color Exposure", "Delta-Adjusted Value Index", "Max Pain", "Exposure Heatmap", "GEX Surface", "IV Surface",
           "Implied Probabilities", "Analysis"]
 
@@ -3899,7 +4084,8 @@ if st.session_state.previous_page != new_page:
         'vomma_expiry_multi',
         'color_expiry_multi',
         'exposure_heatmap_expiry_multi',
-        'implied_probabilities_expiry_multi'
+        'implied_probabilities_expiry_multi',
+        'multi_ticker_expiry_multi'
     ]
     for key in expiry_selection_keys:
         if key in st.session_state:
@@ -3982,6 +4168,27 @@ def chart_settings():
             key='color_by_intensity',
             help="If enabled, bar transparency will decrease as the value approaches zero."
         )
+
+        if 'highlight_highest_exposure' not in st.session_state:
+            st.session_state.highlight_highest_exposure = False
+        
+        st.checkbox(
+            "Highlight Highest Exposure",
+            value=st.session_state.highlight_highest_exposure,
+            key='highlight_highest_exposure',
+            help="If enabled, the bar with the highest absolute value will be highlighted."
+        )
+
+        if st.session_state.highlight_highest_exposure:
+            if 'highlight_color' not in st.session_state:
+                st.session_state.highlight_color = '#BF40BF'  # Default purple
+            
+            st.color_picker(
+                "Highlight Color", 
+                st.session_state.highlight_color, 
+                key='highlight_color',
+                help="Select the color for the highest absolute exposure highlight."
+            )
         
         # Add intraday chart type selection
         if 'intraday_chart_type' not in st.session_state:
@@ -4356,20 +4563,24 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     r = st.session_state.get('risk_free_rate', 0.04)
 
     def get_valid_sigma(row, flag):
-        # 1. Try Manual Calculation (Preferred: uses Mid Price)
+        # 1. Try Manual Calculation first (Preferred: uses Mid Price)
+        # For MARKET ETF components, use original ETF S/K for accurate IV
         try:
-            # Use Mid Price
             bid = row.get('bid', 0)
             ask = row.get('ask', 0)
             price = (bid + ask) / 2
                 
             if price > 0:
-                calculated_sigma = calculate_implied_volatility(price, S, row['strike'], t, r, flag, q)
+                # Use original ETF values if available (MARKET components), otherwise current S/strike
+                calc_spot = row.get('_original_spot', S)
+                calc_strike = row.get('_original_strike', row['strike'])
+                
+                calculated_sigma = calculate_implied_volatility(price, calc_spot, calc_strike, t, r, flag, q)
                 if calculated_sigma is not None and 0 < calculated_sigma <= 5.0:
                     return calculated_sigma
         except Exception:
             pass
-            
+        
         # 2. Fallback to YFinance provided IV
         try:
             yf_iv = row.get('impliedVolatility')
@@ -4410,7 +4621,7 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     # Determine which metric to use based on settings
     metric_type = st.session_state.get('exposure_metric', 'Open Interest')
     
-    # Apply scaling factor (defaults to 1.0 for standard tickers, adjusted for MARKET ETFs)
+    # Get scale_factor (1.0 for all tickers - MARKET data is pre-normalized during fetch)
     c_scale = calls.get('scale_factor', 1.0)
     p_scale = puts.get('scale_factor', 1.0)
     
@@ -4692,16 +4903,21 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
         f"<span style='color: {st.session_state.put_color}'>{format_large_number(total_put_value)}</span>"
     )
 
-    # Calculate max exposure for intensity
+    # Calculate max exposure for intensity and highlighting
     max_exposure = 1.0
-    if st.session_state.get('color_by_intensity', False):
-         call_vals = calls_df[exposure_type].abs() if not calls_df.empty else []
-         put_vals = puts_df[exposure_type].abs() if not puts_df.empty else []
-         all_vals = []
-         if len(call_vals) > 0: all_vals.extend(call_vals)
-         if len(put_vals) > 0: all_vals.extend(put_vals)
-         if all_vals: max_exposure = max(all_vals)
+    all_abs_vals = []
+    if st.session_state.show_calls and not calls_df.empty:
+        all_abs_vals.extend(calls_df[exposure_type].abs().tolist())
+    if st.session_state.show_puts and not puts_df.empty:
+        all_abs_vals.extend(puts_df[exposure_type].abs().tolist())
+    if st.session_state.show_net and not net_exposure.empty:
+        all_abs_vals.extend(net_exposure.abs().tolist())
     
+    if all_abs_vals:
+        max_exposure = max(all_abs_vals)
+    
+    global_max_abs = max_exposure if st.session_state.get('highlight_highest_exposure', False) else None
+
     def get_colors(base_color, values, max_val):
         if not st.session_state.get('color_by_intensity', False):
             return base_color
@@ -4709,6 +4925,17 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
         # Convert to list if series
         vals = values.tolist() if hasattr(values, 'tolist') else list(values)
         return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
+
+    def get_marker_line(values, max_val):
+        """Helper to get marker line properties for highlighting highest exposure."""
+        if max_val is None or max_val == 0 or st.session_state.chart_type not in ['Bar', 'Horizontal Bar']:
+            return dict(width=0)
+        
+        # Convert values to list if it's a series
+        vals = values.tolist() if hasattr(values, 'tolist') else list(values)
+        # Add border to the highest absolute exposure bar
+        widths = [4 if abs(v) == max_val else 0 for v in vals]
+        return dict(color=st.session_state.get('highlight_color', '#BF40BF'), width=widths)
 
     fig = go.Figure()
 
@@ -4755,14 +4982,14 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 x=calls_df['strike'],
                 y=calls_df[exposure_type],
                 name='Call',
-                marker_color=c_colors
+                marker=dict(color=c_colors, line=get_marker_line(calls_df[exposure_type], global_max_abs))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig.add_trace(go.Bar(
                 y=calls_df['strike'],
                 x=calls_df[exposure_type],
                 name='Call',
-                marker_color=c_colors,
+                marker=dict(color=c_colors, line=get_marker_line(calls_df[exposure_type], global_max_abs)),
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -4800,14 +5027,14 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 x=puts_df['strike'],
                 y=puts_df[exposure_type],
                 name='Put',
-                marker_color=p_colors
+                marker=dict(color=p_colors, line=get_marker_line(puts_df[exposure_type], global_max_abs))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig.add_trace(go.Bar(
                 y=puts_df['strike'],
                 x=puts_df[exposure_type],
                 name='Put',
-                marker_color=p_colors,
+                marker=dict(color=p_colors, line=get_marker_line(puts_df[exposure_type], global_max_abs)),
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -4853,14 +5080,14 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
                 x=net_exposure.index,
                 y=net_exposure.values,
                 name='Net',
-                marker_color=net_colors
+                marker=dict(color=net_colors, line=get_marker_line(net_exposure, global_max_abs))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig.add_trace(go.Bar(
                 y=net_exposure.index,
                 x=net_exposure.values,
                 name='Net',
-                marker_color=net_colors,
+                marker=dict(color=net_colors, line=get_marker_line(net_exposure, global_max_abs)),
                 orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
@@ -5158,11 +5385,18 @@ def create_max_pain_chart(calls, puts, S, date_count=1):
     total_pain_color = '#FFD700'  # Gold color for total pain
     
     if st.session_state.chart_type in ['Bar', 'Horizontal Bar']:
+        # Calculate max pain value for highlighting if enabled
+        pain_values = list(total_pain_by_strike.values())
+        max_pain_val = max([abs(v) for v in pain_values]) if pain_values else 0
+        
+        widths = [4 if abs(v) == max_pain_val and st.session_state.get('highlight_highest_exposure', False) else 0 for v in pain_values]
+        marker_line = dict(color=st.session_state.get('highlight_color', '#BF40BF'), width=widths)
+
         fig.add_trace(go.Bar(
             x=list(total_pain_by_strike.keys()),
             y=list(total_pain_by_strike.values()),
             name='Total Pain',
-            marker_color=total_pain_color
+            marker=dict(color=total_pain_color, line=marker_line)
         ))
     elif st.session_state.chart_type == 'Line':
         fig.add_trace(go.Scatter(
@@ -5436,6 +5670,29 @@ def create_davi_chart(calls, puts, S, date_count=1):
         f"<span style='color: {put_color}'>{format_large_number(total_put_davi)}</span>"
     )
 
+    # Calculate max DAVI for highlighting
+    max_davi = 1.0
+    all_davi = []
+    if st.session_state.show_calls and not calls_df.empty:
+        all_davi.extend(calls_df['DAVI'].abs().tolist())
+    if st.session_state.show_puts and not puts_df.empty:
+        all_davi.extend(puts_df['DAVI'].abs().tolist())
+    if st.session_state.show_net and not net_davi.empty:
+        all_davi.extend(net_davi.abs().tolist())
+    
+    if all_davi:
+        max_davi = max(all_davi)
+    
+    global_max_davi = max_davi if st.session_state.get('highlight_highest_exposure', False) else None
+
+    def get_marker_line(values, max_val):
+        """Helper to get marker line properties for highlighting highest value. (DAVI)"""
+        if max_val is None or max_val == 0 or st.session_state.chart_type not in ['Bar', 'Horizontal Bar']:
+            return dict(width=0)
+        vals = values.tolist() if hasattr(values, 'tolist') else list(values)
+        widths = [4 if abs(v) == max_val else 0 for v in vals]
+        return dict(color=st.session_state.get('highlight_color', '#BF40BF'), width=widths)
+
     fig = go.Figure()
 
     # Add calls if enabled
@@ -5445,14 +5702,14 @@ def create_davi_chart(calls, puts, S, date_count=1):
                 x=calls_df['strike'],
                 y=calls_df['DAVI'],
                 name='Call',
-                marker_color=call_color
+                marker=dict(color=call_color, line=get_marker_line(calls_df['DAVI'], global_max_davi))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig.add_trace(go.Bar(
                 y=calls_df['strike'],
                 x=calls_df['DAVI'],
                 name='Call',
-                marker_color=call_color,
+                marker=dict(color=call_color, line=get_marker_line(calls_df['DAVI'], global_max_davi)),
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -5488,14 +5745,14 @@ def create_davi_chart(calls, puts, S, date_count=1):
                 x=puts_df['strike'],
                 y=puts_df['DAVI'],
                 name='Put',
-                marker_color=put_color
+                marker=dict(color=put_color, line=get_marker_line(puts_df['DAVI'], global_max_davi))
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig.add_trace(go.Bar(
                 y=puts_df['strike'],
                 x=puts_df['DAVI'],
                 name='Put',
-                marker_color=put_color,
+                marker=dict(color=put_color, line=get_marker_line(puts_df['DAVI'], global_max_davi)),
                 orientation='h'
             ))
         elif st.session_state.chart_type == 'Scatter':
@@ -5531,14 +5788,20 @@ def create_davi_chart(calls, puts, S, date_count=1):
                 x=net_davi.index,
                 y=net_davi.values,
                 name='Net',
-                marker_color=[call_color if val >= 0 else put_color for val in net_davi.values]
+                marker=dict(
+                    color=[call_color if val >= 0 else put_color for val in net_davi.values],
+                    line=get_marker_line(net_davi, global_max_davi)
+                )
             ))
         elif st.session_state.chart_type == 'Horizontal Bar':
             fig.add_trace(go.Bar(
                 y=net_davi.index,
                 x=net_davi.values,
                 name='Net',
-                marker_color=[call_color if val >= 0 else put_color for val in net_davi.values],
+                marker=dict(
+                    color=[call_color if val >= 0 else put_color for val in net_davi.values],
+                    line=get_marker_line(net_davi, global_max_davi)
+                ),
                 orientation='h'
             ))
         elif st.session_state.chart_type in ['Scatter', 'Line']:
@@ -5658,10 +5921,16 @@ if st.session_state.current_page:
     if market_status:
         st.warning(market_status)
 
-# Create main placeholder for page content
+# Create main placeholder for page content with a unique key per page
+page_key = st.session_state.get('current_page', 'default').replace(' ', '_').lower()
 main_placeholder = st.empty()
 
+# Store reference and clear to ensure no stale content from previous pages
+st.session_state['main_placeholder'] = main_placeholder
+main_placeholder.empty()
+
 if st.session_state.current_page == "OI & Volume":
+    main_placeholder.empty()
     with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -5770,8 +6039,8 @@ if st.session_state.current_page == "OI & Volume":
 
                     # Original OI and Volume charts
                     oi_fig, volume_fig = create_oi_volume_charts(all_calls, all_puts, S, len(selected_expiry_dates))
-                    st.plotly_chart(oi_fig, width='stretch')
-                    st.plotly_chart(volume_fig, width='stretch')
+                    st.plotly_chart(oi_fig, width='stretch', key=get_chart_key("oi_volume_oi_chart"))
+                    st.plotly_chart(volume_fig, width='stretch', key=get_chart_key("oi_volume_vol_chart"))
                 
                 with tab2:
                     # New: Options flow analysis and visualizations
@@ -5808,12 +6077,12 @@ if st.session_state.current_page == "OI & Volume":
                     flow_col1, flow_col2 = st.columns(2)
                     
                     with flow_col1:
-                        st.plotly_chart(fig_volume_chart, width='stretch')
-                        st.plotly_chart(fig_itm_otm_vol, width='stretch')
+                        st.plotly_chart(fig_volume_chart, width='stretch', key=get_chart_key("flow_volume_chart"))
+                        st.plotly_chart(fig_itm_otm_vol, width='stretch', key=get_chart_key("flow_itm_otm_vol_chart"))
                     
                     with flow_col2:
-                        st.plotly_chart(fig_premium_chart, width='stretch')
-                        st.plotly_chart(fig_itm_otm_prem, width='stretch')
+                        st.plotly_chart(fig_premium_chart, width='stretch', key=get_chart_key("flow_premium_chart"))
+                        st.plotly_chart(fig_itm_otm_prem, width='stretch', key=get_chart_key("flow_itm_otm_prem_chart"))
                     
                     # Summary metrics display
                     st.subheader("Flow Detail Summary")
@@ -6043,7 +6312,7 @@ if st.session_state.current_page == "OI & Volume":
                         )
                     )
                     
-                    st.plotly_chart(itm_premium_fig, width='stretch')
+                    st.plotly_chart(itm_premium_fig, width='stretch', key=get_chart_key("premium_itm_chart"))
                     
                     # Add additional premium insights with ITM flow details
                     st.markdown("### Premium Insights")
@@ -6319,10 +6588,10 @@ if st.session_state.current_page == "OI & Volume":
                                     chart_col1, chart_col2 = st.columns(2)
                                     
                                     with chart_col1:
-                                        st.plotly_chart(fig_pie, width='stretch')
+                                        st.plotly_chart(fig_pie, width='stretch', key=get_chart_key("mm_pie_chart"))
                                     
                                     with chart_col2:
-                                        st.plotly_chart(fig_bar, width='stretch')
+                                        st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("mm_bar_chart"))
                                 
                                 # Optional: Show data table in collapsible section
                                 with st.expander("📋 View Raw Data Table", expanded=False):
@@ -6369,6 +6638,7 @@ if st.session_state.current_page == "OI & Volume":
                             """)
 
 elif st.session_state.current_page == "Gamma Exposure":
+    main_placeholder.empty()
     with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
@@ -6430,7 +6700,7 @@ elif st.session_state.current_page == "Gamma Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, width='stretch')
+                st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("gamma_exposure_chart"))
                 
                 # Display exposure explanation
                 exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
@@ -6440,6 +6710,7 @@ elif st.session_state.current_page == "Gamma Exposure":
                     st.markdown(exp_perspective_text)
 
 elif st.session_state.current_page == "Vanna Exposure":
+    main_placeholder.empty()
     with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
@@ -6501,7 +6772,7 @@ elif st.session_state.current_page == "Vanna Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, width='stretch')
+                st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("vanna_exposure_chart"))
                 
                 # Display exposure explanation
                 exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
@@ -6511,6 +6782,7 @@ elif st.session_state.current_page == "Vanna Exposure":
                     st.markdown(exp_perspective_text)
 
 elif st.session_state.current_page == "Delta Exposure":
+    main_placeholder.empty()
     with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
@@ -6572,7 +6844,7 @@ elif st.session_state.current_page == "Delta Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, width='stretch')
+                st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("delta_exposure_chart"))
                 
                 # Display exposure explanation
                 exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
@@ -6582,6 +6854,7 @@ elif st.session_state.current_page == "Delta Exposure":
                     st.markdown(exp_perspective_text)
 
 elif st.session_state.current_page == "Charm Exposure":
+    main_placeholder.empty()
     with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
@@ -6643,7 +6916,7 @@ elif st.session_state.current_page == "Charm Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, width='stretch')
+                st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("charm_exposure_chart"))
                 
                 # Display exposure explanation
                 exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
@@ -6653,6 +6926,7 @@ elif st.session_state.current_page == "Charm Exposure":
                     st.markdown(exp_perspective_text)
 
 elif st.session_state.current_page == "Speed Exposure":
+    main_placeholder.empty()
     with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
@@ -6714,7 +6988,7 @@ elif st.session_state.current_page == "Speed Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, width='stretch')
+                st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("speed_exposure_chart"))
                 
                 # Display exposure explanation
                 exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
@@ -6724,6 +6998,7 @@ elif st.session_state.current_page == "Speed Exposure":
                     st.markdown(exp_perspective_text)
 
 elif st.session_state.current_page == "Vomma Exposure":
+    main_placeholder.empty()
     with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, or vomma
         col1, col2 = st.columns([0.94, 0.06])
@@ -6785,7 +7060,7 @@ elif st.session_state.current_page == "Vomma Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, width='stretch')
+                st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("vomma_exposure_chart"))
                 
                 # Display exposure explanation
                 exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
@@ -6795,6 +7070,7 @@ elif st.session_state.current_page == "Vomma Exposure":
                     st.markdown(exp_perspective_text)
 
 elif st.session_state.current_page == "Color Exposure":
+    main_placeholder.empty()
     with main_placeholder.container():
         page_name = st.session_state.current_page.split()[0].lower()  # gamma, vanna, delta, charm, speed, vomma, or color
         col1, col2 = st.columns([0.94, 0.06])
@@ -6857,7 +7133,7 @@ elif st.session_state.current_page == "Color Exposure":
                 # Modify the bar chart title to show multiple dates
                 title = f"{st.session_state.current_page} by Strike ({len(selected_expiry_dates)} dates)"
                 fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
-                st.plotly_chart(fig_bar, width='stretch')
+                st.plotly_chart(fig_bar, width='stretch', key=get_chart_key("color_exposure_chart"))
                 
                 # Display exposure explanation
                 exp_title, exp_desc, exp_perspective_text, perspective = get_exposure_explanation(exposure_type)
@@ -6867,6 +7143,9 @@ elif st.session_state.current_page == "Color Exposure":
                     st.markdown(exp_perspective_text)
 
 elif st.session_state.current_page == "Dashboard":
+    # Ensure previous page content is cleared
+    main_placeholder.empty()
+    
     with main_placeholder.container():
         # Create a single input for ticker with refresh button
         col1, col2 = st.columns([0.94, 0.06])
@@ -7620,7 +7899,7 @@ elif st.session_state.current_page == "Dashboard":
                         st.plotly_chart(
                             fig_intraday,
                             width='stretch',
-                            key="Dashboard_intraday_chart",
+                            key=get_chart_key("Dashboard_intraday_chart"),
                             config={
                                 'modeBarButtonsToAdd': [
                                     'drawline',
@@ -7636,7 +7915,8 @@ elif st.session_state.current_page == "Dashboard":
                         )
                     
                     supplemental_charts = []
-                    for chart, fig in [
+                    chart_names = []
+                    for chart_name, fig in [
                         ("Gamma Exposure", fig_gamma), ("Delta Exposure", fig_delta),
                         ("Vanna Exposure", fig_vanna), ("Charm Exposure", fig_charm),
                         ("Speed Exposure", fig_speed), ("Vomma Exposure", fig_vomma),
@@ -7645,22 +7925,218 @@ elif st.session_state.current_page == "Dashboard":
                         ("Delta-Adjusted Value Index", create_davi_chart(calls, puts, S, len(selected_expiry_dates))),
                         ("Volume by Strike", create_volume_by_strike_chart(calls, puts, S, len(selected_expiry_dates)))
                     ]:
-                        if chart in selected_charts:
+                        if chart_name in selected_charts:
                             supplemental_charts.append(fig)
+                            chart_names.append(chart_name.replace(" ", "_").lower())
                     
                     # Render supplemental charts as an N-column grid.
                     charts_per_row = int(st.session_state.get('dashboard_charts_per_row', 2) or 2)
                     charts_per_row = max(1, min(charts_per_row, 4))
 
+                    chart_idx = 0
                     for i in range(0, len(supplemental_charts), charts_per_row):
                         cols = st.columns(charts_per_row)
                         for j, chart in enumerate(supplemental_charts[i:i + charts_per_row]):
                             if chart is not None:
-                                cols[j].plotly_chart(chart, width='stretch')
+                                cols[j].plotly_chart(chart, width='stretch', key=get_chart_key(f"dashboard_{chart_names[chart_idx]}_{chart_idx}"))
+                            chart_idx += 1
 
+elif st.session_state.current_page == "Multi-Ticker View":
+    # Ensure previous page content is cleared
+    main_placeholder.empty()
+    
+    with main_placeholder.container():
+        # Header section with better styling
+        st.markdown("### 🖼️ Multi-Ticker Exposure Comparison")
+        st.markdown("---")
+        
+        # Configuration row
+        config_col1, config_col2, config_col3, config_col4 = st.columns([2, 1, 1, 1])
+        with config_col1:
+            exposure_type_options = {
+                "Gamma Exposure (GEX)": "GEX",
+                "Delta Exposure (DEX)": "DEX",
+                "Vanna Exposure (VEX)": "VEX",
+                "Charm Exposure": "Charm",
+                "Speed Exposure": "Speed",
+                "Vomma Exposure": "Vomma",
+                "Color Exposure": "Color"
+            }
+            # Initialize mt_exp_type if not present
+            if 'mt_exp_type' not in st.session_state:
+                st.session_state.mt_exp_type = list(exposure_type_options.keys())[0]
+                
+            selected_exposure_label = st.selectbox(
+                "📊 Exposure Type",
+                options=list(exposure_type_options.keys()),
+                key="mt_exp_type",
+                help="Select which Greek exposure to display for all tickers"
+            )
+            exposure_type = exposure_type_options[selected_exposure_label]
+            
+        with config_col2:
+            expiry_count = st.number_input(
+                "📅 Expiries",
+                min_value=1,
+                max_value=20,
+                value=1,
+                key="mt_expiry_count",
+                help="Number of nearest expiration dates to aggregate"
+            )
+            
+        with config_col3:
+            grid_layout = st.selectbox(
+                "🔲 Layout",
+                options=["1 Column", "2 Columns", "3 Columns", "4 Columns"],
+                index=1,
+                key="mt_grid_layout",
+                help="Choose grid layout for charts"
+            )
+            
+        with config_col4:
+            st.write("")
+            st.write("")
+            if st.button("🔄 Refresh", key="mt_refresh", use_container_width=True):
+                st.cache_data.clear()
+                st.rerun()
 
+        st.markdown("---")
+        
+        # Ticker inputs with better organization
+        ticker_cols = st.columns(4)
+        tickers = []
+        ticker_labels = []
+        
+        for idx in range(4):
+            with ticker_cols[idx]:
+                ticker_key = f"mt_ticker_{idx}"
+                # If it's the first ticker and not set, use saved_ticker
+                default_val = saved_ticker if idx == 0 and not st.session_state.get(ticker_key) else st.session_state.get(ticker_key, "")
+                t = st.text_input(
+                    f"Ticker {idx+1}",
+                    value=default_val,
+                    key=ticker_key,
+                    placeholder=f"e.g., SPY"
+                )
+                if t:
+                    formatted = format_ticker(t)
+                    tickers.append(formatted)
+                    ticker_labels.append(t.upper())
+        
+        if not tickers:
+            st.info("👆 Enter at least one ticker symbol above to begin analysis")
+            st.stop()
+        
+        st.markdown("---")
+        
+        # Determine grid columns based on layout selection
+        cols_per_row = {"1 Column": 1, "2 Columns": 2, "3 Columns": 3, "4 Columns": 4}[grid_layout]
+        
+        # Generate a unique key prefix based on current configuration and render ID to avoid cached widget conflicts
+        render_id = st.session_state.get('page_render_id', 0)
+        config_hash = f"{render_id}_{cols_per_row}_{len(tickers)}_{expiry_count}_{exposure_type}"
+        
+        # Calculate number of rows needed
+        num_tickers = len(tickers)
+        num_rows = (num_tickers + cols_per_row - 1) // cols_per_row
+        
+        # Intelligently scale chart height based on number of rows and layout
+        # Target viewport height ~900px, leaving space for header/controls
+        available_height = 850
+        if num_rows == 1:
+            # Single row - can use more height
+            base_height = min(500, available_height // num_rows - 50)
+        else:
+            # Multiple rows - reduce height to fit all on screen
+            base_height = min(450, (available_height // num_rows) - 40)
+        
+        # Further adjust based on columns (more columns = slightly smaller)
+        if cols_per_row == 4:
+            chart_height = int(base_height * 0.9)
+        elif cols_per_row == 3:
+            chart_height = int(base_height * 0.95)
+        else:
+            chart_height = base_height
+        
+        # Minimum height to maintain readability
+        chart_height = max(300, chart_height)
+        
+        # Adjust text size for compact view
+        text_size_adjustment = 0
+        if num_rows > 1:
+            text_size_adjustment = -2
+        
+        # Display charts in dynamic grid
+        for i in range(0, len(tickers), cols_per_row):
+            row_cols = st.columns(cols_per_row)
+            
+            for j in range(cols_per_row):
+                if i + j < len(tickers):
+                    ticker = tickers[i + j]
+                    ticker_label = ticker_labels[i + j]
+                    
+                    with row_cols[j]:
+                        # Create a container with visual separation
+                        with st.container():
+                            try:
+                                S = get_current_price(ticker)
+                                if S is None:
+                                    st.error(f"❌ Could not fetch price for {ticker_label}")
+                                    continue
+                                
+                                stock = get_ticker_object(ticker)
+                                available_dates = stock.options
+                                if not available_dates:
+                                    st.warning(f"⚠️ No options available for {ticker_label}")
+                                    continue
+                                
+                                target_dates = available_dates[:int(expiry_count)]
+                                
+                                all_calls, all_puts = fetch_and_process_multiple_dates(
+                                    ticker, 
+                                    target_dates,
+                                    lambda t, d: compute_greeks_and_charts(t, d, "mt", S)[:2]
+                                )
+                                
+                                if all_calls.empty and all_puts.empty:
+                                    st.warning(f"⚠️ No data available for {ticker_label}")
+                                    continue
+                                
+                                # Create chart title with price info
+                                expiry_suffix = f" ({len(target_dates)} exp)" if len(target_dates) > 1 else ""
+                                title = f"{ticker_label}{expiry_suffix} - ${S:.2f}"
+                                
+                                fig_bar = create_exposure_bar_chart(all_calls, all_puts, exposure_type, title, S)
+                                
+                                # Apply compact layout optimizations
+                                adjusted_text_size = st.session_state.chart_text_size + text_size_adjustment
+                                
+                                fig_bar.update_layout(
+                                    height=chart_height,
+                                    margin=dict(l=15, r=15, t=50, b=15),
+                                    title=dict(
+                                        font=dict(size=adjusted_text_size + 2)
+                                    ),
+                                    xaxis=dict(
+                                        title=dict(font=dict(size=adjusted_text_size - 1)),
+                                        tickfont=dict(size=adjusted_text_size - 2)
+                                    ),
+                                    yaxis=dict(
+                                        title=dict(font=dict(size=adjusted_text_size - 1)),
+                                        tickfont=dict(size=adjusted_text_size - 2)
+                                    ),
+                                    legend=dict(
+                                        font=dict(size=adjusted_text_size - 1)
+                                    )
+                                )
+                                
+                                st.plotly_chart(fig_bar, width='stretch', key=f"mt_chart_{config_hash}_{ticker}_{i}_{j}")
+                                
+                            except Exception as e:
+                                st.error(f"❌ Error loading {ticker_label}: {str(e)}")
 
 elif st.session_state.current_page == "Max Pain":
+    main_placeholder.empty()
     with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -7719,11 +8195,12 @@ elif st.session_state.current_page == "Max Pain":
                     # Create and display the max pain chart
                     fig = create_max_pain_chart(all_calls, all_puts, S, len(selected_expiry_dates))
                     if fig is not None:
-                        st.plotly_chart(fig, width='stretch')
+                        st.plotly_chart(fig, width='stretch', key=get_chart_key("max_pain_chart"))
                 else:
                     st.warning("Could not calculate max pain point.")
 
 elif st.session_state.current_page == "IV Surface":
+    main_placeholder.empty()
     with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -7916,13 +8393,14 @@ elif st.session_state.current_page == "IV Surface":
                             height=800
                         )
 
-                    st.plotly_chart(fig, width='stretch')
+                    st.plotly_chart(fig, width='stretch', key=get_chart_key("iv_surface_chart"))
 
             except Exception as e:
                 st.error(f"Error generating chart: {str(e)}")
     st.stop()
 
 elif st.session_state.current_page == "GEX Surface":
+    main_placeholder.empty()
     with main_placeholder.container():
         # Layout for ticker input and refresh button
         col1, col2 = st.columns([0.94, 0.06])
@@ -8150,13 +8628,14 @@ elif st.session_state.current_page == "GEX Surface":
                             height=800
                         )
 
-                    st.plotly_chart(fig, width='stretch')
+                    st.plotly_chart(fig, width='stretch', key=get_chart_key("gex_surface_chart"))
 
             except Exception as e:
                 st.error(f"Error generating chart: {str(e)}")
     st.stop()
 
 elif st.session_state.current_page == "Analysis":
+    main_placeholder.empty()
     with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -8341,7 +8820,7 @@ elif st.session_state.current_page == "Analysis":
             fig.update_yaxes(range=[0, 100], row=2, col=1)
 
             # Display technical analysis chart
-            st.plotly_chart(fig, width='stretch')
+            st.plotly_chart(fig, width='stretch', key=get_chart_key("analysis_tech_chart"))
             
             # Create MACD chart
             macd_fig = make_subplots(rows=1, cols=1)
@@ -8387,7 +8866,7 @@ elif st.session_state.current_page == "Analysis":
             )
             
             # Display MACD chart
-            st.plotly_chart(macd_fig, width='stretch')
+            st.plotly_chart(macd_fig, width='stretch', key=get_chart_key("analysis_macd_chart"))
             
             # Historical volatility chart
             vol_fig = go.Figure()
@@ -8422,7 +8901,7 @@ elif st.session_state.current_page == "Analysis":
             )
             
             # Display volatility chart
-            st.plotly_chart(vol_fig, width='stretch')
+            st.plotly_chart(vol_fig, width='stretch', key=get_chart_key("analysis_vol_chart"))
 
             # Add trend indicator section
             st.subheader("Technical Indicators Summary")
@@ -8488,11 +8967,12 @@ elif st.session_state.current_page == "Analysis":
 
             weekday_returns = calculate_annualized_return(historical_data, period)
             weekday_fig = create_weekday_returns_chart(weekday_returns)
-            st.plotly_chart(weekday_fig, width='stretch')
+            st.plotly_chart(weekday_fig, width='stretch', key=get_chart_key("analysis_weekday_chart"))
 
     st.stop()
 
 elif st.session_state.current_page == "Delta-Adjusted Value Index":
+    main_placeholder.empty()
     with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -8580,9 +9060,10 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
                     all_puts['calc_delta'] = all_puts.apply(lambda row: compute_delta(row, "p"), axis=1)
 
                 fig = create_davi_chart(all_calls, all_puts, S)
-                st.plotly_chart(fig, width='stretch')
+                st.plotly_chart(fig, width='stretch', key=get_chart_key("davi_chart"))
 
 elif st.session_state.current_page == "Exposure Heatmap":
+    main_placeholder.empty()
     with main_placeholder.container():
         col1, col2 = st.columns([0.94, 0.06])
         with col1:
@@ -8889,7 +9370,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         margin=dict(r=100)
                     )
                     
-                    st.plotly_chart(fig_calls, width='stretch')
+                    st.plotly_chart(fig_calls, width='stretch', key=get_chart_key("heatmap_calls_chart"))
                 
                 # Put Exposure Heatmap
                 if st.session_state.show_puts:
@@ -8948,7 +9429,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         margin=dict(r=100)
                     )
                     
-                    st.plotly_chart(fig_puts, width='stretch')
+                    st.plotly_chart(fig_puts, width='stretch', key=get_chart_key("heatmap_puts_chart"))
                 
                 # Net Exposure Heatmap
                 if st.session_state.show_net:
@@ -9007,7 +9488,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         margin=dict(r=100)
                     )
                     
-                    st.plotly_chart(fig_net, width='stretch')
+                    st.plotly_chart(fig_net, width='stretch', key=get_chart_key("heatmap_net_chart"))
                 
                 # Summary statistics
                 st.markdown("### 📊 Summary Statistics")
@@ -9101,6 +9582,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 st.code(traceback.format_exc())
 
 elif st.session_state.current_page == "Implied Probabilities":
+    main_placeholder.empty()
     with main_placeholder.container():
         
         # Header
@@ -9386,7 +9868,7 @@ elif st.session_state.current_page == "Implied Probabilities":
                     # Create comprehensive chart
                     if not prob_df.empty:
                         fig = create_implied_probabilities_chart(prob_df, S, prob_16_data, prob_30_data, implied_move_data)
-                        st.plotly_chart(fig, width='stretch')
+                        st.plotly_chart(fig, width='stretch', key=get_chart_key("prob_viz_chart"))
                     else:
                         st.warning("Could not calculate probability distribution.")
                 
@@ -9434,7 +9916,7 @@ elif st.session_state.current_page == "Implied Probabilities":
 
                         st.dataframe(display_df, width='stretch')
                         st.subheader("Detailed Probability Visualization")
-                        st.plotly_chart(figure, width='stretch')
+                        st.plotly_chart(figure, width='stretch', key=get_chart_key("prob_detail_chart"))
                     
                     # Additional metrics
                     if implied_move_data:
