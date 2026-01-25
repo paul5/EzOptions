@@ -504,6 +504,132 @@ def calculate_strike_range(current_price, percentage=None):
         percentage = st.session_state.get('strike_range', 1.0)
     return current_price * (percentage / 100.0)
 
+def map_to_spx_strikes(df, etf_price, spx_price, bucket_size=10):
+    """
+    Maps ETF strikes to SPX-equivalent strikes using moneyness, then distributes
+    using a Gaussian kernel with adaptive bandwidth based on ETF strike spacing.
+    
+    Gaussian kernel: weight = exp(-distance² / (2σ²))
+    where σ (bandwidth) = half of ETF's strike spacing in SPX terms
+    
+    This ensures each ETF naturally spreads to enough buckets to fill its gaps:
+    - IWM: $1 strikes → ~$26 SPX spacing → σ = $13 → spreads ~3 buckets each side
+    - SPY: $1 strikes → ~$10 SPX spacing → σ = $5 → spreads ~1-2 buckets each side
+    - SPX: $5 strikes → $5 spacing → σ = $2.5 → mostly stays in one bucket
+    
+    Args:
+        df: DataFrame with 'strike' column
+        etf_price: Current ETF spot price
+        spx_price: Current SPX spot price  
+        bucket_size: Strike bucket width in dollars (default $10)
+    
+    Returns:
+        DataFrame with strikes distributed via Gaussian kernel to SPX buckets
+    """
+    if df.empty:
+        return df
+        
+    df = df.copy()
+    
+    # Store original values for Greek calculations
+    df['_original_strike'] = df['strike']
+    df['_original_spot'] = etf_price
+    
+    # Estimate ETF's typical strike spacing (use median diff of sorted strikes)
+    sorted_strikes = np.sort(df['strike'].unique())
+    if len(sorted_strikes) > 1:
+        strike_diffs = np.diff(sorted_strikes)
+        etf_strike_spacing = np.median(strike_diffs[strike_diffs > 0])
+    else:
+        etf_strike_spacing = 1.0  # Default for single strike
+    
+    # Convert ETF strike spacing to SPX-equivalent spacing
+    spx_equivalent_spacing = etf_strike_spacing * (spx_price / etf_price)
+    
+    # Bandwidth (σ) = half of SPX-equivalent spacing
+    # This ensures Gaussian reaches adjacent ETF-equivalent strikes
+    sigma = spx_equivalent_spacing / 2
+    
+    # Minimum sigma to ensure some spread
+    sigma = max(sigma, bucket_size / 2)
+    
+    # Calculate moneyness and SPX-equivalent strikes
+    moneyness = df['strike'] / etf_price
+    target_strikes = moneyness * spx_price
+    
+    # Determine range of buckets to distribute to (±3σ covers 99.7%)
+    spread_range = int(np.ceil(3 * sigma / bucket_size))
+    spread_range = max(spread_range, 1)  # At least 1 bucket each side
+    spread_range = min(spread_range, 5)  # Cap at 5 buckets each side
+    
+    # Generate all bucket offsets
+    offsets = np.arange(-spread_range, spread_range + 1) * bucket_size
+    
+    result_dfs = []
+    
+    for offset in offsets:
+        df_bucket = df.copy()
+        
+        # Calculate the bucket center for this offset
+        base_bucket = np.round(target_strikes / bucket_size) * bucket_size
+        bucket_strike = base_bucket + offset
+        
+        # Calculate distance from target to this bucket
+        distance = bucket_strike - target_strikes
+        
+        # Gaussian weight
+        weight = np.exp(-distance**2 / (2 * sigma**2))
+        
+        # Only keep rows with meaningful weight
+        mask = weight > 0.01
+        if not mask.any():
+            continue
+            
+        df_bucket = df_bucket[mask].copy()
+        weight = weight[mask]
+        
+        df_bucket['strike'] = bucket_strike[mask]
+        df_bucket['_bucket_weight'] = weight
+        
+        # Scale OI and volume by weight
+        if 'openInterest' in df_bucket.columns:
+            df_bucket['openInterest'] = df_bucket['openInterest'] * weight
+        if 'volume' in df_bucket.columns:
+            df_bucket['volume'] = df_bucket['volume'] * weight
+        
+        result_dfs.append(df_bucket)
+    
+    if not result_dfs:
+        # Fallback: just round to nearest bucket
+        df['strike'] = np.round(target_strikes / bucket_size) * bucket_size
+        df['_bucket_weight'] = 1.0
+        return df
+    
+    result = pd.concat(result_dfs, ignore_index=True)
+    
+    # Normalize weights so total OI/volume per original row is preserved
+    # Group by original strike and normalize
+    if '_original_strike' in result.columns:
+        weight_sums = result.groupby('_original_strike')['_bucket_weight'].transform('sum')
+        
+        # Replace zero weight sums with 1 to avoid division issues
+        weight_sums = weight_sums.replace(0, 1)
+        
+        norm_factor = 1.0 / weight_sums
+        
+        # Clean up any inf/nan in norm_factor
+        norm_factor = norm_factor.replace([np.inf, -np.inf], 1.0).fillna(1.0)
+        
+        if 'openInterest' in result.columns:
+            # Simplified: just multiply by norm_factor
+            result['openInterest'] = result['openInterest'] * norm_factor
+        if 'volume' in result.columns:
+            result['volume'] = result['volume'] * norm_factor
+        
+        result['_bucket_weight'] = result['_bucket_weight'] * norm_factor
+    
+    return result
+
 @st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
 def fetch_options_for_date(ticker, date, S=None):
     """Fetch options data for a specific date with caching"""
@@ -524,28 +650,11 @@ def fetch_options_for_date(ticker, date, S=None):
         if spx_calls.empty and spx_puts.empty:
             return pd.DataFrame(), pd.DataFrame()
         
-        # Build the SPX strike grid (union of calls and puts strikes)
-        spx_strikes = np.array(sorted(set(
-            list(spx_calls['strike'].unique() if not spx_calls.empty else []) + 
-            list(spx_puts['strike'].unique() if not spx_puts.empty else [])
-        )))
-        
-        if len(spx_strikes) == 0:
-            return pd.DataFrame(), pd.DataFrame()
-        
         calls_list = []
         puts_list = []
         component_count = 0
         
-        def find_nearest_spx_strike(etf_strike, etf_price):
-            """Map ETF strike to nearest SPX strike by moneyness"""
-            etf_moneyness = etf_strike / etf_price
-            target_spx_strike = etf_moneyness * spx_price
-            # Find nearest actual SPX strike
-            idx = np.abs(spx_strikes - target_spx_strike).argmin()
-            return spx_strikes[idx]
-        
-        # Helper to fetch, normalize to percentage, and map to SPX strikes
+        # Helper to fetch, normalize to percentage, and map to SPX-equivalent strikes
         def add_normalized_data(tick, etf_price, is_spx=False):
             nonlocal component_count
             try:
@@ -565,6 +674,11 @@ def fetch_options_for_date(ticker, date, S=None):
                 if not c.empty:
                     c = c.copy()
                     
+                    # For SPX: set original values before Gaussian spreading
+                    if is_spx:
+                        c['_original_strike'] = c['strike']
+                        c['_original_spot'] = etf_price
+                    
                     # For ETFs: Pre-calculate IV using ORIGINAL ETF values before strike mapping
                     # IV is scale-independent - transfers directly to SPX equivalent
                     if not is_spx and 'impliedVolatility' not in c.columns:
@@ -572,12 +686,9 @@ def fetch_options_for_date(ticker, date, S=None):
                         c['_mid'] = (c['bid'].fillna(0) + c['ask'].fillna(0)) / 2
                         # IV will be calculated downstream using yfinance IV or recalculated
                     
-                    if not is_spx:
-                        # Store original ETF strike for reference before mapping
-                        c['_original_strike'] = c['strike']
-                        c['_original_spot'] = etf_price
-                        # Map ETF strikes to nearest SPX strikes by moneyness
-                        c['strike'] = c['strike'].apply(lambda x: find_nearest_spx_strike(x, etf_price))
+                    # Apply Gaussian spreading to ALL sources (including SPX) for consistent treatment
+                    # For SPX: moneyness=1.0 so no translation, but gets same Gaussian spread
+                    c = map_to_spx_strikes(c, etf_price, spx_price)
                     
                     # DO NOT scale prices - IV from yfinance is already correct
                     # Greeks will be calculated using IV directly (not from scaled prices)
@@ -596,16 +707,17 @@ def fetch_options_for_date(ticker, date, S=None):
                 if not p.empty:
                     p = p.copy()
                     
+                    # For SPX: set original values before Gaussian spreading
+                    if is_spx:
+                        p['_original_strike'] = p['strike']
+                        p['_original_spot'] = etf_price
+                    
                     # For ETFs: Pre-calculate IV using ORIGINAL ETF values before strike mapping
                     if not is_spx and 'impliedVolatility' not in p.columns:
                         p['_mid'] = (p['bid'].fillna(0) + p['ask'].fillna(0)) / 2
                     
-                    if not is_spx:
-                        # Store original ETF strike for reference before mapping
-                        p['_original_strike'] = p['strike']
-                        p['_original_spot'] = etf_price
-                        # Map ETF strikes to nearest SPX strikes by moneyness
-                        p['strike'] = p['strike'].apply(lambda x: find_nearest_spx_strike(x, etf_price))
+                    # Apply Gaussian spreading to ALL sources (including SPX)
+                    p = map_to_spx_strikes(p, etf_price, spx_price)
                     
                     # DO NOT scale prices - IV from yfinance is already correct
                     p['scale_factor'] = 1.0
@@ -633,8 +745,78 @@ def fetch_options_for_date(ticker, date, S=None):
         combined_calls = pd.concat(calls_list, ignore_index=True) if calls_list else pd.DataFrame()
         combined_puts = pd.concat(puts_list, ignore_index=True) if puts_list else pd.DataFrame()
         
-        # After aggregation by strike, the data naturally sums at SPX strikes
-        # Each component contributes equally regardless of absolute size
+        # Clean up any NaN values in OI/volume before normalization
+        if not combined_calls.empty:
+            combined_calls['openInterest'] = combined_calls['openInterest'].fillna(0)
+            if 'volume' in combined_calls.columns:
+                combined_calls['volume'] = combined_calls['volume'].fillna(0)
+        if not combined_puts.empty:
+            combined_puts['openInterest'] = combined_puts['openInterest'].fillna(0)
+            if 'volume' in combined_puts.columns:
+                combined_puts['volume'] = combined_puts['volume'].fillna(0)
+        
+        # Post-normalization: Force equal contribution from each source at every strike
+        # This ensures SPX, SPY, QQQ, IWM each contribute 25% at every strike bucket
+        def post_normalize(df):
+            if df.empty or '_original_spot' not in df.columns:
+                return df
+            
+            df = df.copy()
+            
+            # Fill any NaN in _original_spot (shouldn't happen but safety)
+            if df['_original_spot'].isna().any():
+                df = df.dropna(subset=['_original_spot'])
+            
+            # Identify source from original spot price
+            def get_source(spot):
+                if abs(spot - spx_price) < 1: return "SPX"
+                if abs(spot - spy_price) < 1: return "SPY"
+                if abs(spot - qqq_price) < 1: return "QQQ"
+                return "IWM"
+            
+            df['_source'] = df['_original_spot'].apply(get_source)
+            
+            # For each strike, normalize so each source contributes equally
+            for strike in df['strike'].unique():
+                strike_mask = df['strike'] == strike
+                strike_data = df[strike_mask]
+                
+                # Only count sources that actually have OI at this strike
+                sources_with_oi = []
+                for source in strike_data['_source'].unique():
+                    source_oi = strike_data[strike_data['_source'] == source]['openInterest'].sum()
+                    if source_oi > 0:
+                        sources_with_oi.append(source)
+                
+                num_sources = len(sources_with_oi)
+                
+                if num_sources > 1:
+                    # Calculate total OI at this strike
+                    total_oi = strike_data['openInterest'].sum()
+                    total_vol = strike_data['volume'].sum() if 'volume' in strike_data.columns else 0
+                    
+                    # Target: each source with OI gets equal share
+                    target_per_source_oi = total_oi / num_sources
+                    target_per_source_vol = total_vol / num_sources
+                    
+                    for source in sources_with_oi:
+                        source_mask = strike_mask & (df['_source'] == source)
+                        source_oi = df.loc[source_mask, 'openInterest'].sum()
+                        
+                        # Scale factor to make this source contribute its equal share
+                        scale = target_per_source_oi / source_oi
+                        df.loc[source_mask, 'openInterest'] = df.loc[source_mask, 'openInterest'] * scale
+                        
+                        if 'volume' in df.columns:
+                            source_vol = df.loc[source_mask, 'volume'].sum()
+                            if source_vol > 0:
+                                vol_scale = target_per_source_vol / source_vol
+                                df.loc[source_mask, 'volume'] = df.loc[source_mask, 'volume'] * vol_scale
+            
+            return df
+        
+        combined_calls = post_normalize(combined_calls)
+        combined_puts = post_normalize(combined_puts)
         
         return combined_calls, combined_puts
 
@@ -677,28 +859,11 @@ def fetch_all_options(ticker):
         if spx_calls.empty and spx_puts.empty:
             return pd.DataFrame(), pd.DataFrame()
         
-        # Build the SPX strike grid (union of calls and puts strikes)
-        spx_strikes = np.array(sorted(set(
-            list(spx_calls['strike'].unique() if not spx_calls.empty else []) + 
-            list(spx_puts['strike'].unique() if not spx_puts.empty else [])
-        )))
-        
-        if len(spx_strikes) == 0:
-            return pd.DataFrame(), pd.DataFrame()
-        
         calls_list = []
         puts_list = []
         component_count = 0
         
-        def find_nearest_spx_strike(etf_strike, etf_price):
-            """Map ETF strike to nearest SPX strike by moneyness"""
-            etf_moneyness = etf_strike / etf_price
-            target_spx_strike = etf_moneyness * spx_price
-            # Find nearest actual SPX strike
-            idx = np.abs(spx_strikes - target_spx_strike).argmin()
-            return spx_strikes[idx]
-        
-        # Helper to fetch, normalize to percentage, and map to SPX strikes
+        # Helper to fetch, normalize to percentage, and map to SPX-equivalent strikes
         def process_component(tick, etf_price, is_spx=False):
             nonlocal component_count
             try:
@@ -717,12 +882,13 @@ def fetch_all_options(ticker):
                 if not c.empty:
                     c = c.copy()
                     
-                    if not is_spx:
-                        # Store original ETF strike for reference before mapping
+                    # For SPX: set original values before Gaussian spreading
+                    if is_spx:
                         c['_original_strike'] = c['strike']
                         c['_original_spot'] = etf_price
-                        # Map ETF strikes to nearest SPX strikes by moneyness
-                        c['strike'] = c['strike'].apply(lambda x: find_nearest_spx_strike(x, etf_price))
+                    
+                    # Apply Gaussian spreading to ALL sources (including SPX)
+                    c = map_to_spx_strikes(c, etf_price, spx_price)
                     
                     # DO NOT scale prices - IV from yfinance is already correct
                     # Greeks will be calculated using IV directly (not from scaled prices)
@@ -740,12 +906,13 @@ def fetch_all_options(ticker):
                 if not p.empty:
                     p = p.copy()
                     
-                    if not is_spx:
-                        # Store original ETF strike for reference before mapping
+                    # For SPX: set original values before Gaussian spreading
+                    if is_spx:
                         p['_original_strike'] = p['strike']
                         p['_original_spot'] = etf_price
-                        # Map ETF strikes to nearest SPX strikes by moneyness
-                        p['strike'] = p['strike'].apply(lambda x: find_nearest_spx_strike(x, etf_price))
+                    
+                    # Apply Gaussian spreading to ALL sources (including SPX)
+                    p = map_to_spx_strikes(p, etf_price, spx_price)
                     
                     # DO NOT scale prices - IV from yfinance is already correct
                     p['scale_factor'] = 1.0
@@ -772,8 +939,71 @@ def fetch_all_options(ticker):
         combined_calls = pd.concat(calls_list, ignore_index=True) if calls_list else pd.DataFrame()
         combined_puts = pd.concat(puts_list, ignore_index=True) if puts_list else pd.DataFrame()
         
-        # After aggregation by strike, the data naturally sums at SPX strikes
-        # Each component contributes equally regardless of absolute size
+        # Clean up any NaN values in OI/volume before normalization
+        if not combined_calls.empty:
+            combined_calls['openInterest'] = combined_calls['openInterest'].fillna(0)
+            if 'volume' in combined_calls.columns:
+                combined_calls['volume'] = combined_calls['volume'].fillna(0)
+        if not combined_puts.empty:
+            combined_puts['openInterest'] = combined_puts['openInterest'].fillna(0)
+            if 'volume' in combined_puts.columns:
+                combined_puts['volume'] = combined_puts['volume'].fillna(0)
+        
+        # Post-normalization: Force equal contribution from each source at every strike
+        def post_normalize(df):
+            if df.empty or '_original_spot' not in df.columns:
+                return df
+            
+            df = df.copy()
+            
+            # Drop rows with missing _original_spot
+            if df['_original_spot'].isna().any():
+                df = df.dropna(subset=['_original_spot'])
+            
+            def get_source(spot):
+                if abs(spot - spx_price) < 1: return "SPX"
+                if abs(spot - spy_price) < 1: return "SPY"
+                if abs(spot - qqq_price) < 1: return "QQQ"
+                return "IWM"
+            
+            df['_source'] = df['_original_spot'].apply(get_source)
+            
+            for strike in df['strike'].unique():
+                strike_mask = df['strike'] == strike
+                strike_data = df[strike_mask]
+                
+                # Only count sources that actually have OI at this strike
+                sources_with_oi = []
+                for source in strike_data['_source'].unique():
+                    source_oi = strike_data[strike_data['_source'] == source]['openInterest'].sum()
+                    if source_oi > 0:
+                        sources_with_oi.append(source)
+                
+                num_sources = len(sources_with_oi)
+                
+                if num_sources > 1:
+                    total_oi = strike_data['openInterest'].sum()
+                    total_vol = strike_data['volume'].sum() if 'volume' in strike_data.columns else 0
+                    target_per_source_oi = total_oi / num_sources
+                    target_per_source_vol = total_vol / num_sources
+                    
+                    for source in sources_with_oi:
+                        source_mask = strike_mask & (df['_source'] == source)
+                        source_oi = df.loc[source_mask, 'openInterest'].sum()
+                        
+                        scale = target_per_source_oi / source_oi
+                        df.loc[source_mask, 'openInterest'] = df.loc[source_mask, 'openInterest'] * scale
+                        
+                        if 'volume' in df.columns:
+                            source_vol = df.loc[source_mask, 'volume'].sum()
+                            if source_vol > 0:
+                                vol_scale = target_per_source_vol / source_vol
+                                df.loc[source_mask, 'volume'] = df.loc[source_mask, 'volume'] * vol_scale
+            
+            return df
+        
+        combined_calls = post_normalize(combined_calls)
+        combined_puts = post_normalize(combined_puts)
         
         return combined_calls, combined_puts
 
@@ -4597,11 +4827,16 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
         if sigma is None:
             return pd.Series([None] * 7)
         try:
-            delta_val, gamma_val, vanna_val = calculate_greeks(flag, S, row["strike"], t, sigma, r, q)
-            charm_val = calculate_charm(flag, S, row["strike"], t, sigma, r, q)
-            speed_val = calculate_speed(flag, S, row["strike"], t, sigma, r, q)
-            vomma_val = calculate_vomma(flag, S, row["strike"], t, sigma, r, q)
-            color_val = calculate_color(flag, S, row["strike"], t, sigma, r, q)
+            # For MARKET ETF components, use original ETF spot/strike for accurate Greeks
+            # Greeks are scale-dependent on spot price, so we must use original values
+            calc_spot = row.get('_original_spot', S)
+            calc_strike = row.get('_original_strike', row['strike'])
+            
+            delta_val, gamma_val, vanna_val = calculate_greeks(flag, calc_spot, calc_strike, t, sigma, r, q)
+            charm_val = calculate_charm(flag, calc_spot, calc_strike, t, sigma, r, q)
+            speed_val = calculate_speed(flag, calc_spot, calc_strike, t, sigma, r, q)
+            vomma_val = calculate_vomma(flag, calc_spot, calc_strike, t, sigma, r, q)
+            color_val = calculate_color(flag, calc_spot, calc_strike, t, sigma, r, q)
             
             return pd.Series([gamma_val, vanna_val, delta_val, charm_val, speed_val, vomma_val, color_val])
         except Exception:
@@ -4643,27 +4878,35 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
 
     # Determine if we should calculate in notional (dollars) or underlying units (shares/index units)
     use_notional = st.session_state.get('calculate_in_notional', True)
-    spot_multiplier = S if use_notional else 1.0
+    
+    # For exposure calculations, use original spot price for each row (handles MARKET ETF components)
+    # This ensures GEX = gamma * OI * 100 * S² * 0.01 uses the correct S for each instrument
+    calls_spot = calls['_original_spot'] if '_original_spot' in calls.columns else S
+    puts_spot = puts['_original_spot'] if '_original_spot' in puts.columns else S
+    
+    # Spot multiplier for notional calculations (use per-row spot for accuracy)
+    calls_spot_mult = calls_spot if use_notional else 1.0
+    puts_spot_mult = puts_spot if use_notional else 1.0
 
     # GEX = Gamma * Metric * Contract Size * Spot Price^2 * 0.01 (Dollar Gamma per 1% move in underlying)
-    calls["GEX"] = calls["calc_gamma"] * calls_metric * 100 * S * spot_multiplier * 0.01
-    puts["GEX"] = puts["calc_gamma"] * puts_metric * 100 * S * spot_multiplier * 0.01
+    calls["GEX"] = calls["calc_gamma"] * calls_metric * 100 * calls_spot * calls_spot_mult * 0.01
+    puts["GEX"] = puts["calc_gamma"] * puts_metric * 100 * puts_spot * puts_spot_mult * 0.01
     
     # VEX = Vanna * Metric * Contract Size * Spot Price * 0.01 (Dollar Vanna per 1 vol point change)
-    calls["VEX"] = calls["calc_vanna"] * calls_metric * 100 * spot_multiplier * 0.01
-    puts["VEX"] = puts["calc_vanna"] * puts_metric * 100 * spot_multiplier * 0.01
+    calls["VEX"] = calls["calc_vanna"] * calls_metric * 100 * calls_spot_mult * 0.01
+    puts["VEX"] = puts["calc_vanna"] * puts_metric * 100 * puts_spot_mult * 0.01
     
     # DEX = Delta * Metric * Contract Size * Spot Price (Dollar Delta Exposure)
-    calls["DEX"] = calls["calc_delta"] * calls_metric * 100 * spot_multiplier
-    puts["DEX"] = puts["calc_delta"] * puts_metric * 100 * spot_multiplier
+    calls["DEX"] = calls["calc_delta"] * calls_metric * 100 * calls_spot_mult
+    puts["DEX"] = puts["calc_delta"] * puts_metric * 100 * puts_spot_mult
     
     # Charm = Charm * Metric * Contract Size * Spot Price / 365 (Dollar Charm per 1 day decay)
-    calls["Charm"] = calls["calc_charm"] * calls_metric * 100 * spot_multiplier / 365.0
-    puts["Charm"] = puts["calc_charm"] * puts_metric * 100 * spot_multiplier / 365.0
+    calls["Charm"] = calls["calc_charm"] * calls_metric * 100 * calls_spot_mult / 365.0
+    puts["Charm"] = puts["calc_charm"] * puts_metric * 100 * puts_spot_mult / 365.0
     
     # Speed = Speed * Metric * Contract Size * Spot Price^2 * 0.01 (Dollar Speed per 1% move)
-    calls["Speed"] = calls["calc_speed"] * calls_metric * 100 * S * spot_multiplier * 0.01
-    puts["Speed"] = puts["calc_speed"] * puts_metric * 100 * S * spot_multiplier * 0.01
+    calls["Speed"] = calls["calc_speed"] * calls_metric * 100 * calls_spot * calls_spot_mult * 0.01
+    puts["Speed"] = puts["calc_speed"] * puts_metric * 100 * puts_spot * puts_spot_mult * 0.01
     
     # Vomma = Vomma * Metric * Contract Size * 0.01 (Dollar Vomma per 1 vol point change)
     calls["Vomma"] = calls["calc_vomma"] * calls_metric * 100 * 0.01
@@ -4673,8 +4916,8 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     # Color is dGamma/dt. GEX is Dollar Gamma. So Color Exposure is d(GEX)/dt.
     # GEX = Gamma * Metric * 100 * S * Spot * 0.01.
     # So d(GEX)/dt = Color * Metric * 100 * S * Spot * 0.01 / 365.
-    calls["Color"] = calls["calc_color"] * calls_metric * 100 * S * spot_multiplier * 0.01 / 365.0
-    puts["Color"] = puts["calc_color"] * puts_metric * 100 * S * spot_multiplier * 0.01 / 365.0
+    calls["Color"] = calls["calc_color"] * calls_metric * 100 * calls_spot * calls_spot_mult * 0.01 / 365.0
+    puts["Color"] = puts["calc_color"] * puts_metric * 100 * puts_spot * puts_spot_mult * 0.01 / 365.0
 
     # Apply delta adjustment if enabled
     if st.session_state.get('delta_adjusted_exposures', False):
@@ -5581,7 +5824,10 @@ def create_davi_chart(calls, puts, S, date_count=1):
                 if sigma is None or sigma <= 0:
                     return 0.5  # Default delta if IV is missing or invalid
                 try:
-                    delta_val, _, _ = calculate_greeks(flag, S, row["strike"], t, sigma)
+                    # Use original spot/strike for MARKET ETF components
+                    calc_spot = row.get('_original_spot', S)
+                    calc_strike = row.get('_original_strike', row['strike'])
+                    delta_val, _, _ = calculate_greeks(flag, calc_spot, calc_strike, t, sigma)
                     return delta_val
                 except Exception:
                     return 0.5  # Default delta if calculation fails
@@ -9051,7 +9297,11 @@ elif st.session_state.current_page == "Delta-Adjusted Value Index":
                             K = row.get("strike", None)
                             if K is None:
                                 return None
-                            return calculate_greeks(flag, S, K, t, sigma)['delta']
+                            # Use original spot/strike for MARKET ETF components
+                            calc_spot = row.get('_original_spot', S)
+                            calc_strike = row.get('_original_strike', K)
+                            delta_val, _, _ = calculate_greeks(flag, calc_spot, calc_strike, t, sigma)
+                            return delta_val
                         except Exception:
                             return None
                     
