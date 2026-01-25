@@ -1174,6 +1174,7 @@ def calculate_annualized_return(data, period='1y'):
     """Calculate annualized return rate for each weekday"""
     # Convert period to days
     period_days = {
+        '2y': 730,
         '1y': 365,
         '6mo': 180,
         '3mo': 90,
@@ -1201,8 +1202,11 @@ def calculate_annualized_return(data, period='1y'):
     
     return annualized_returns.fillna(0) * 100  # Convert to percentage
 
-def create_weekday_returns_chart(returns):
-    """Create a bar chart of weekday returns"""
+def create_weekday_returns_chart(returns, height: int = 420):
+    """Create a bar chart of weekday returns
+
+    height: chart height in pixels (defaults to the same size used for the typical-range chart).
+    """
     fig = go.Figure()
     
     # Add bars with colors based on return value
@@ -1244,13 +1248,103 @@ def create_weekday_returns_chart(returns):
             tickfont=dict(size=st.session_state.chart_text_size)
         ),
         showlegend=False,
-        template="plotly_dark"
+        template="plotly_dark",
+        height=height
     )
     
     # Update axis fonts
     fig.update_xaxes(tickfont=dict(size=st.session_state.chart_text_size))
     
     return fig
+
+# --- Typical range helpers (added) ---
+def calculate_typical_ranges(df, atr_period: int = 14):
+    """Calculate typical price ranges (daily, weekly, monthly, quarterly) using historical rolling ranges.
+
+    Returns a dict with historical percentile bands for various windows.
+    """
+    if df is None or df.empty:
+        return {}
+
+    # Ensure required columns exist
+    if not all(c in df.columns for c in ("High", "Low", "Close")):
+        return {}
+
+    prev_close = df['Close'].shift(1)
+    tr = pd.concat([
+        df['High'] - df['Low'],
+        (df['High'] - prev_close).abs(),
+        (df['Low'] - prev_close).abs()
+    ], axis=1).max(axis=1).fillna(0)
+
+    price = float(df['Close'].iloc[-1]) if len(df['Close']) else 0.0
+
+    # Rolling multi-period ranges (High of window - Low of window)
+    ranges_data = {
+        '1d': tr.dropna(),
+        '5d': (df['High'].rolling(5).max() - df['Low'].rolling(5).min()).dropna(),
+        '21d': (df['High'].rolling(21).max() - df['Low'].rolling(21).min()).dropna(),
+        '63d': (df['High'].rolling(63).max() - df['Low'].rolling(63).min()).dropna(),
+    }
+
+    def pctiles(series):
+        if series.empty:
+            return {'p50': np.nan, 'p80': np.nan, 'p95': np.nan}
+        return {
+            'p50': float(np.percentile(series, 50)),
+            'p80': float(np.percentile(series, 80)),
+            'p95': float(np.percentile(series, 95))
+        }
+
+    results = {'price': price}
+    for period, series in ranges_data.items():
+        results[f'hist_{period}'] = pctiles(series)
+
+    return results
+
+
+def create_typical_range_chart(ranges: dict, height: int = 420):
+    """Create a grouped-bar chart for historical percentile ranges shown as % of price."""
+    if not ranges:
+        return go.Figure()
+
+    periods = ['1d', '5d', '21d', '63d']
+    labels = ['Daily', 'Weekly (5d)', 'Monthly (21d)', 'Quarterly (63d)']
+    
+    p50, p80, p95 = [], [], []
+    price = ranges['price']
+    
+    for p in periods:
+        key = f'hist_{p}'
+        if key in ranges and price > 0:
+            p50.append(ranges[key]['p50'] / price * 100)
+            p80.append(ranges[key]['p80'] / price * 100)
+            p95.append(ranges[key]['p95'] / price * 100)
+        else:
+            p50.append(np.nan); p80.append(np.nan); p95.append(np.nan)
+
+    call_color = st.session_state.call_color
+    put_color = st.session_state.put_color
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=labels, y=p50, name='Typical (Median)', marker_color='rgba(200,200,200,0.75)', text=[f"{v:.2f}%" for v in p50], textposition='auto'))
+    fig.add_trace(go.Bar(x=labels, y=p80, name='Stretched (80%ile)', marker_color=hex_to_rgba(call_color, 0.7), text=[f"{v:.2f}%" for v in p80], textposition='auto'))
+    fig.add_trace(go.Bar(x=labels, y=p95, name='Extreme (95%ile)', marker_color=hex_to_rgba(put_color, 0.7), text=[f"{v:.2f}%" for v in p95], textposition='auto'))
+
+    fig.update_layout(
+        template='plotly_dark',
+        barmode='group',
+        height=height,
+        title=dict(text='Typical Range Percentiles (as % of price)', x=0, xanchor='left', font=dict(size=st.session_state.chart_text_size + 2)),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=st.session_state.chart_text_size - 1)),
+        margin=dict(t=80, b=40, l=40, r=20)
+    )
+    fig.update_yaxes(title='% of Price', ticksuffix='%', tickformat='.2f', tickfont=dict(size=st.session_state.chart_text_size))
+    fig.update_xaxes(tickfont=dict(size=st.session_state.chart_text_size))
+
+    return fig
+
+# --- end typical range helpers ---
 
 def analyze_options_flow(calls_df, puts_df, current_price):
     """Analyze options flow focusing on Volume and Premium distribution (ITM vs OTM)."""
@@ -8242,7 +8336,7 @@ elif st.session_state.current_page == "Multi-Ticker View":
         with config_col4:
             st.write("")
             st.write("")
-            if st.button("🔄 Refresh", key="mt_refresh", use_container_width=True):
+            if st.button("🔄 Refresh", key="mt_refresh", width='stretch'):
                 st.cache_data.clear()
                 st.rerun()
 
@@ -8912,8 +9006,8 @@ elif st.session_state.current_page == "Analysis":
                 analysis_ticker = '^GSPC'
                 
             stock = yf.Ticker(analysis_ticker)
-            # Fetch 1 year of historical data for maximum analysis period
-            historical_data = stock.history(period="1y", interval="1d")
+            # Fetch 2 years of history to get better stats for Quarterly/Yearly ranges
+            historical_data = stock.history(period="2y", interval="1d")
             
             if historical_data.empty:
                 st.warning("No historical data available for this ticker.")
@@ -9201,8 +9295,9 @@ elif st.session_state.current_page == "Analysis":
             
             period = st.selectbox(
                 "Select Analysis Period:",
-                options=['1y', '6mo', '3mo', '1mo'], 
+                options=['2y', '1y', '6mo', '3mo', '1mo'], 
                 format_func=lambda x: {
+                    '2y': '2 Years',
                     '1y': '1 Year',
                     '6mo': '6 Months', 
                     '3mo': '3 Months',
@@ -9212,8 +9307,45 @@ elif st.session_state.current_page == "Analysis":
             )
 
             weekday_returns = calculate_annualized_return(historical_data, period)
-            weekday_fig = create_weekday_returns_chart(weekday_returns)
+            chart_height = 420
+            weekday_fig = create_weekday_returns_chart(weekday_returns, height=chart_height)
             st.plotly_chart(weekday_fig, width='stretch', key=get_chart_key("analysis_weekday_chart"))
+
+            # --- Typical range (daily / weekly / monthly) ---
+            st.subheader("Typical Range Analysis")
+
+            ranges = calculate_typical_ranges(historical_data, atr_period=14)
+            if not ranges:
+                st.info("Not enough data to compute typical ranges.")
+            else:
+                # Show percentile chart at the same height as the weekday returns chart
+                tr_chart = create_typical_range_chart(ranges, height=chart_height)
+                st.plotly_chart(tr_chart, width='stretch', key=get_chart_key("analysis_typical_range_chart"))
+
+                # Display metrics in a 4-column grid (Daily, Weekly, Monthly, Quarterly)
+                price = ranges['price']
+                metrics_data = [
+                    ("Daily", 'hist_1d'),
+                    ("Weekly", 'hist_5d'),
+                    ("Monthly", 'hist_21d'),
+                    ("Quarterly", 'hist_63d')
+                ]
+                
+                cols = st.columns(len(metrics_data))
+                for i, (label, key) in enumerate(metrics_data):
+                    with cols[i]:
+                        if key in ranges:
+                            val = ranges[key]['p50']
+                            pct = (val / price * 100) if price else 0
+                            st.metric(f"Typical {label}", f"${val:.2f}", f"{pct:.2f}%")
+                        else:
+                            st.metric(f"Typical {label}", "N/A", "N/A")
+
+                # Clear interpretation
+                st.markdown(
+                    f"> **Interpretation:** These metrics represent the **typical price span** (High minus Low) based on the **Median (50th percentile)** of the last 2 years of history. "
+                    f"Example: In half of all 5-day periods, the stock moved less than **${ranges['hist_5d']['p50']:.2f}** from its high point to its low point."
+                )
 
     st.stop()
 
@@ -9802,9 +9934,15 @@ elif st.session_state.current_page == "Exposure Heatmap":
                             for idx in top_pos_indices:
                                 strike = filtered_strikes[idx]
                                 val = net_per_strike[idx]
+                                diff = strike - S
+                                diff_pct = (diff / S) * 100
+                                diff_text = f"{diff:+.2f} ({diff_pct:+.2f}%)"
                                 st.markdown(f"""
                                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; background-color: rgba(255,255,255,0.05); border-radius: 4px; margin-bottom: 4px;">
-                                        <span style="font-weight: bold; font-size: 1.1em;">${strike:.2f}</span>
+                                        <div>
+                                            <span style="font-weight: bold; font-size: 1.1em;">${strike:.2f}</span>
+                                            <span style="color: #888; font-size: 0.9em; margin-left: 8px;">{diff_text}</span>
+                                        </div>
                                         <span style="color: {call_color}; font-weight: bold; font-size: 1.1em;">{format_currency_val(val)}</span>
                                     </div>
                                 """, unsafe_allow_html=True)
@@ -9817,9 +9955,15 @@ elif st.session_state.current_page == "Exposure Heatmap":
                             for idx in top_neg_indices:
                                 strike = filtered_strikes[idx]
                                 val = net_per_strike[idx]
+                                diff = strike - S
+                                diff_pct = (diff / S) * 100
+                                diff_text = f"{diff:+.2f} ({diff_pct:+.2f}%)"
                                 st.markdown(f"""
                                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px; background-color: rgba(255,255,255,0.05); border-radius: 4px; margin-bottom: 4px;">
-                                        <span style="font-weight: bold; font-size: 1.1em;">${strike:.2f}</span>
+                                        <div>
+                                            <span style="font-weight: bold; font-size: 1.1em;">${strike:.2f}</span>
+                                            <span style="color: #888; font-size: 0.9em; margin-left: 8px;">{diff_text}</span>
+                                        </div>
                                         <span style="color: {put_color}; font-weight: bold; font-size: 1.1em;">{format_currency_val(val)}</span>
                                     </div>
                                 """, unsafe_allow_html=True)
