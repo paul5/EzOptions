@@ -30,6 +30,16 @@ def load_user_settings():
         try:
             with open(SETTINGS_FILE, 'r') as f:
                 settings = json.load(f)
+                
+                # Migrate old color_by_intensity to new coloring_mode
+                if 'color_by_intensity' in settings and 'coloring_mode' not in settings:
+                    if settings['color_by_intensity']:
+                        settings['coloring_mode'] = 'Linear Intensity'
+                    else:
+                        settings['coloring_mode'] = 'Solid'
+                    # Remove old setting
+                    del settings['color_by_intensity']
+                
                 for key, value in settings.items():
                     if key not in st.session_state:
                          st.session_state[key] = value
@@ -43,7 +53,7 @@ def save_user_settings():
         'saved_ticker', 
         'call_color', 
         'put_color',
-        'color_by_intensity',
+        'coloring_mode',
         'vix_color',
         'show_calls', 
         'show_puts',
@@ -2018,12 +2028,19 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
     global_max_vol = max_vol if st.session_state.get('highlight_highest_exposure', False) else None
 
     def get_colors(base_color, values, max_val):
-        if not st.session_state.get('color_by_intensity', False):
+        coloring_mode = st.session_state.get('coloring_mode', 'Solid')
+        if coloring_mode == 'Solid':
             return base_color
         if max_val == 0: return base_color
         # Convert values to list if it's a series
         vals = values.tolist() if hasattr(values, 'tolist') else list(values)
-        return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
+        
+        if coloring_mode == 'Linear Intensity':
+            return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
+        elif coloring_mode == 'Ranked Intensity':
+            return [hex_to_rgba(base_color, 0.1 + 0.9 * ((abs(v) / max_val) ** 3)) for v in vals]
+        else:
+            return base_color
     
     def get_marker_line(values, max_val):
         """Helper to get marker line properties for highlighting highest value. (OI/Vol)"""
@@ -2129,10 +2146,14 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
     # Add Net OI if enabled
     if st.session_state.show_net and not net_oi.empty:
         net_colors = []
+        coloring_mode = st.session_state.get('coloring_mode', 'Solid')
         for val in net_oi.values:
             base = call_color if val >= 0 else put_color
-            if st.session_state.get('color_by_intensity', False) and max_oi > 0:
+            if coloring_mode == 'Linear Intensity' and max_oi > 0:
                 opacity = 0.3 + 0.7 * (abs(val) / max_oi)
+                net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
+            elif coloring_mode == 'Ranked Intensity' and max_oi > 0:
+                opacity = 0.1 + 0.9 * ((abs(val) / max_oi) ** 3)
                 net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
             else:
                 net_colors.append(base)
@@ -2391,10 +2412,14 @@ def create_oi_volume_charts(calls, puts, S, date_count=1):
     # Add Net Volume if enabled
     if st.session_state.show_net and not net_volume.empty:
         net_colors = []
+        coloring_mode = st.session_state.get('coloring_mode', 'Solid')
         for val in net_volume.values:
             base = call_color if val >= 0 else put_color
-            if st.session_state.get('color_by_intensity', False) and max_vol > 0:
+            if coloring_mode == 'Linear Intensity' and max_vol > 0:
                 opacity = 0.3 + 0.7 * (abs(val) / max_vol)
+                net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
+            elif coloring_mode == 'Ranked Intensity' and max_vol > 0:
+                opacity = 0.1 + 0.9 * ((abs(val) / max_vol) ** 3)
                 net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
             else:
                 net_colors.append(base)
@@ -2631,12 +2656,19 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
     global_max_vol = max_vol if st.session_state.get('highlight_highest_exposure', False) else None
 
     def get_colors(base_color, values, max_val):
-        if not st.session_state.get('color_by_intensity', False):
+        coloring_mode = st.session_state.get('coloring_mode', 'Solid')
+        if coloring_mode == 'Solid':
             return base_color
         if max_val == 0: return base_color
         # Convert values to list if it's a series
         vals = values.tolist() if hasattr(values, 'tolist') else list(values)
-        return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
+        
+        if coloring_mode == 'Linear Intensity':
+            return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
+        elif coloring_mode == 'Ranked Intensity':
+            return [hex_to_rgba(base_color, 0.1 + 0.9 * ((abs(v) / max_val) ** 3)) for v in vals]
+        else:
+            return base_color
     
     def get_marker_line(values, max_val):
         """Helper to get marker line properties for highlighting highest value. (Standalone Vol)"""
@@ -2742,10 +2774,14 @@ def create_volume_by_strike_chart(calls, puts, S, date_count=1):
     # Add Net Volume if enabled
     if st.session_state.show_net and not net_volume.empty:
         net_colors = []
+        coloring_mode = st.session_state.get('coloring_mode', 'Solid')
         for val in net_volume.values:
             base = call_color if val >= 0 else put_color
-            if st.session_state.get('color_by_intensity', False) and max_vol > 0:
+            if coloring_mode == 'Linear Intensity' and max_vol > 0:
                 opacity = 0.3 + 0.7 * (abs(val) / max_vol)
+                net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
+            elif coloring_mode == 'Ranked Intensity' and max_vol > 0:
+                opacity = 0.1 + 0.9 * ((abs(val) / max_val) ** 3)
                 net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
             else:
                 net_colors.append(base)
@@ -4482,15 +4518,16 @@ def chart_settings():
         st.color_picker("Calls", st.session_state.call_color, key='call_color')
         st.color_picker("Puts", st.session_state.put_color, key='put_color')
 
-        # Color by intensity setting
-        if 'color_by_intensity' not in st.session_state:
-            st.session_state.color_by_intensity = False
+        # Coloring mode setting
+        if 'coloring_mode' not in st.session_state:
+            st.session_state.coloring_mode = 'Solid'
         
-        st.checkbox(
-            "Color Bars by Intensity",
-            value=st.session_state.color_by_intensity,
-            key='color_by_intensity',
-            help="If enabled, bar transparency will decrease as the value approaches zero."
+        st.selectbox(
+            "Coloring Mode:",
+            options=['Solid', 'Linear Intensity', 'Ranked Intensity'],
+            index=['Solid', 'Linear Intensity', 'Ranked Intensity'].index(st.session_state.coloring_mode),
+            key='coloring_mode',
+            help="Solid: All bars same color | Linear: Gradual fade by value | Ranked: Only highest exposures are bright, others heavily muted"
         )
 
         if 'highlight_highest_exposure' not in st.session_state:
@@ -5256,12 +5293,22 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     global_max_abs = max_exposure if st.session_state.get('highlight_highest_exposure', False) else None
 
     def get_colors(base_color, values, max_val):
-        if not st.session_state.get('color_by_intensity', False):
+        coloring_mode = st.session_state.get('coloring_mode', 'Solid')
+        if coloring_mode == 'Solid':
             return base_color
         if max_val == 0: return base_color
         # Convert to list if series
         vals = values.tolist() if hasattr(values, 'tolist') else list(values)
-        return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
+        
+        if coloring_mode == 'Linear Intensity':
+            # Linear mapping from 0.3 to 1.0 opacity
+            return [hex_to_rgba(base_color, 0.3 + 0.7 * (abs(v) / max_val)) for v in vals]
+        elif coloring_mode == 'Ranked Intensity':
+            # Exponential/power mapping - only top exposures are bright
+            # Use power of 3 to aggressively fade lower values
+            return [hex_to_rgba(base_color, 0.1 + 0.9 * ((abs(v) / max_val) ** 3)) for v in vals]
+        else:
+            return base_color
 
     def get_marker_line(values, max_val):
         """Helper to get marker line properties for highlighting highest exposure."""
@@ -5404,10 +5451,14 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
     # Add Net if enabled
     if st.session_state.show_net and not net_exposure.empty:
         net_colors = []
+        coloring_mode = st.session_state.get('coloring_mode', 'Solid')
         for val in net_exposure.values:
             base = call_color if val >= 0 else put_color
-            if st.session_state.get('color_by_intensity', False) and max_exposure > 0:
+            if coloring_mode == 'Linear Intensity' and max_exposure > 0:
                 opacity = 0.3 + 0.7 * (abs(val) / max_exposure)
+                net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
+            elif coloring_mode == 'Ranked Intensity' and max_exposure > 0:
+                opacity = 0.1 + 0.9 * ((abs(val) / max_exposure) ** 3)
                 net_colors.append(hex_to_rgba(base, min(1.0, opacity)))
             else:
                 net_colors.append(base)
