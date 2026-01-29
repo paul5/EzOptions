@@ -4924,6 +4924,10 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     r = st.session_state.get('risk_free_rate', 0.04)
 
     def get_valid_sigma(row, flag):
+        # Minimum IV threshold - reject unrealistic near-zero values
+        # Deep ITM options often return bogus IV from yfinance
+        MIN_IV = 0.01  # 1% minimum IV
+        
         # 1. Try Manual Calculation first (Preferred: uses Mid Price)
         # For MARKET ETF components, use original ETF S/K for accurate IV
         try:
@@ -4937,7 +4941,7 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
                 calc_strike = row.get('_original_strike', row['strike'])
                 
                 calculated_sigma = calculate_implied_volatility(price, calc_spot, calc_strike, t, r, flag, q)
-                if calculated_sigma is not None and 0 < calculated_sigma <= 5.0:
+                if calculated_sigma is not None and MIN_IV <= calculated_sigma <= 5.0:
                     return calculated_sigma
         except Exception:
             pass
@@ -4945,14 +4949,14 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
         # 2. Fallback to YFinance provided IV
         try:
             yf_iv = row.get('impliedVolatility')
-            if yf_iv is not None and 0 < yf_iv <= 5.0:
+            if yf_iv is not None and MIN_IV <= yf_iv <= 5.0:
                 return yf_iv
         except:
             pass
             
         return None
 
-    # Compute Greeks for Gamma, Vanna, Delta, Charm, Speed, Vomma and Color
+    # Compute Greeks for Gamma, Vanna, Delta, Charm, Speed, Vomma, Color
     def compute_all_greeks(row, flag):
         sigma = get_valid_sigma(row, flag)
         if sigma is None:
