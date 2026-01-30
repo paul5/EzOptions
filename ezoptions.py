@@ -63,6 +63,7 @@ def save_user_settings():
         'chart_text_size',
         'refresh_rate',
         'intraday_chart_type',
+        'intraday_timeframe',
         'candlestick_type',
         'show_vix_overlay',
         'gex_type',
@@ -397,6 +398,8 @@ if 'highlight_highest_exposure' not in st.session_state:
     st.session_state.highlight_highest_exposure = False
 if 'highlight_color' not in st.session_state:
     st.session_state.highlight_color = '#BF40BF'  # Default purple
+if 'intraday_timeframe' not in st.session_state:
+    st.session_state.intraday_timeframe = '1m'  # Default 1 minute
 
 # -------------------------------
 # Helper Functions
@@ -3657,7 +3660,7 @@ def fetch_and_process_multiple_dates(ticker, expiry_dates, process_func):
     return pd.DataFrame(), pd.DataFrame()
 
 @st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
-def get_combined_intraday_data(ticker):
+def get_combined_intraday_data(ticker, interval='1m'):
     """Get intraday data with fallback logic"""
     formatted_ticker = ticker.replace('%5E', '^')
     
@@ -3667,7 +3670,7 @@ def get_combined_intraday_data(ticker):
         chart_ticker = '^GSPC'
         
     stock = yf.Ticker(chart_ticker)
-    intraday_data = stock.history(period="1d", interval="1m")
+    intraday_data = stock.history(period="1d", interval=interval)
     
     # Filter for market hours (9:30 AM to 4:00 PM ET)
     if not intraday_data.empty:
@@ -3686,7 +3689,7 @@ def get_combined_intraday_data(ticker):
     if st.session_state.show_vix_overlay:
         try:
             vix = yf.Ticker('VIXY')
-            vix_intraday = vix.history(period="1d", interval="1m")
+            vix_intraday = vix.history(period="1d", interval=interval)
             if not vix_intraday.empty:
                 # Convert timezone to ET and filter for market hours
                 vix_intraday.index = vix_intraday.index.tz_convert(eastern)
@@ -3726,7 +3729,12 @@ def get_combined_intraday_data(ticker):
             if price is not None:
                 latest_price = round(float(price), 2)
                 last_idx = intraday_data.index[-1]
-                new_idx = last_idx + pd.Timedelta(minutes=1)
+                # Parse interval to get minutes (e.g., '5m' -> 5, '1h' -> 60)
+                if interval.endswith('m'):
+                    minutes = int(interval[:-1])
+                else:
+                    minutes = 1  # fallback
+                new_idx = last_idx + pd.Timedelta(minutes=minutes)
                 new_row = pd.DataFrame({
                     'Open': [latest_price],
                     'High': [latest_price],
@@ -3908,7 +3916,8 @@ def reset_session_state():
         'intraday_level_count',
         'highlight_highest_exposure',
         'highlight_color',
-        'show_sd_move'
+        'show_sd_move',
+        'intraday_timeframe'
     }
     
     # Initialize visibility settings if they don't exist
@@ -4573,6 +4582,15 @@ def chart_settings():
                 index=['Filled', 'Hollow', 'Heikin Ashi'].index(st.session_state.candlestick_type),
                 key='candlestick_type'
             )
+        
+        # Intraday timeframe selection
+        st.selectbox(
+            "Intraday Timeframe:",
+            options=['1m', '2m', '5m', '15m', '30m', '60m', '90m'],
+            index=['1m', '2m', '5m', '15m', '30m', '60m', '90m'].index(st.session_state.intraday_timeframe) if st.session_state.intraday_timeframe in ['1m', '2m', '5m', '15m', '30m', '60m', '90m'] else 0,
+            key='intraday_timeframe',
+            help="Select the timeframe interval for intraday price charts (today's trading session only)."
+        )
 
         if 'show_vix_overlay' not in st.session_state:
             st.session_state.show_vix_overlay = False
@@ -7608,7 +7626,8 @@ elif st.session_state.current_page == "Dashboard":
                     fig_color = create_exposure_bar_chart(calls, puts, "Color", f"Color Exposure by Strike{date_suffix}", S)
                     
                     # Intraday price chart
-                    intraday_data, current_price, vix_data = get_combined_intraday_data(ticker)
+                    interval = st.session_state.get('intraday_timeframe', '5m')
+                    intraday_data, current_price, vix_data = get_combined_intraday_data(ticker, interval=interval)
                     if intraday_data is None or current_price is None:
                         st.warning("No intraday data available for this ticker.")
                     else:
