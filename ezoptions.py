@@ -5064,8 +5064,10 @@ def create_exposure_bar_chart(calls, puts, exposure_type, title, S):
         else:  # Absolute
             calls_gex = calls_filtered.groupby('strike')[exposure_type].sum()
             puts_gex = puts_filtered.groupby('strike')[exposure_type].sum()
-            # Calculate total absolute gamma exposure (Call + Put magnitudes)
-            net_exposure = calls_gex.abs().add(puts_gex.abs(), fill_value=0)
+            # Calculate absolute gamma exposure with sign based on net
+            net_gex = calls_gex.sub(puts_gex, fill_value=0)  # Net for sign
+            abs_magnitude = calls_gex.abs().add(puts_gex.abs(), fill_value=0)  # Absolute magnitude
+            net_exposure = abs_magnitude * np.sign(net_gex)
     elif exposure_type == 'DEX':
         net_exposure = calls_filtered.groupby('strike')[exposure_type].sum().add(puts_filtered.groupby('strike')[exposure_type].sum(), fill_value=0)
     else:  # VEX, Charm, Speed, Vomma
@@ -7586,10 +7588,12 @@ elif st.session_state.current_page == "Dashboard":
                             
                             # Calculate Net or Absolute Exposure
                             if exposure_type == 'GEX' and st.session_state.gex_type == 'Absolute':
-                                # Absolute GEX: Sum of absolute values
+                                # Absolute GEX: Magnitude with sign based on net
                                 calls_exp = calls_filtered.groupby('strike')[exposure_type].sum()
                                 puts_exp = puts_filtered.groupby('strike')[exposure_type].sum()
-                                net_exp = calls_exp.abs().add(puts_exp.abs(), fill_value=0)
+                                net_gex = calls_exp.sub(puts_exp, fill_value=0)  # Net for sign
+                                abs_magnitude = calls_exp.abs().add(puts_exp.abs(), fill_value=0)  # Absolute magnitude
+                                net_exp = abs_magnitude * np.sign(net_gex)
                             elif exposure_type == 'GEX':
                                 # Net GEX: Calls positive, Puts negative
                                 net_exp = calls_filtered.groupby('strike')[exposure_type].sum().sub(puts_filtered.groupby('strike')[exposure_type].sum(), fill_value=0)
@@ -9492,8 +9496,10 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     if st.session_state.get('gex_type', 'Net') == 'Net':
                         net_exposure = call_exposure - put_exposure
                     else: # Absolute
-                        # Absolute GEX: Sum of absolute values
-                        net_exposure = np.abs(call_exposure) + np.abs(put_exposure)
+                        # Absolute GEX: Magnitude with sign based on net
+                        net_gex = call_exposure - put_exposure  # Net for sign
+                        abs_magnitude = np.abs(call_exposure) + np.abs(put_exposure)  # Absolute magnitude
+                        net_exposure = abs_magnitude * np.sign(net_gex)
                 elif exposure_type == 'DEX':
                     net_exposure = call_exposure + put_exposure
                 else:
