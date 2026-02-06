@@ -643,6 +643,86 @@ def map_to_spx_strikes(df, etf_price, spx_price, bucket_size=10):
     
     return result
 
+
+def normalize_market_components(calls, puts):
+    """
+    Three-stage per-column geometric mean normalization for MARKET composite.
+    
+    Normalizes each exposure/activity column independently so that every component
+    (SPX, SPY, QQQ, IWM) contributes proportionally to its own activity level,
+    scaled to a common magnitude via geometric mean across all components.
+    
+    Stage 1: Per-source total absolute value for each column
+    Stage 2: Geometric mean scale factor across sources, per column
+    Stage 3: Normalize each source → proportions of own activity, then scale back
+             to displayable units using geometric mean
+    
+    Operates on DataFrames that already have '_source' column and all exposure columns computed.
+    """
+    # Columns to normalize independently — exposures + activity metrics
+    NORM_COLS = ['GEX', 'VEX', 'DEX', 'Charm', 'Speed', 'Vomma', 'Color',
+                 'openInterest', 'volume']
+    
+    combined = pd.concat([calls, puts], ignore_index=True)
+    
+    if combined.empty or '_source' not in combined.columns:
+        return calls, puts
+    
+    sources = combined['_source'].unique().tolist()
+    if len(sources) <= 1:
+        return calls, puts
+    
+    # Determine which norm columns actually exist in the data
+    available_cols = [col for col in NORM_COLS if col in combined.columns]
+    if not available_cols:
+        return calls, puts
+    
+    # --- Stage 1: Per-source total absolute value for each column ---
+    totals = {}  # totals[source][col] = sum(|values|)
+    for source in sources:
+        source_mask = combined['_source'] == source
+        source_data = combined[source_mask]
+        totals[source] = {}
+        for col in available_cols:
+            total_abs = source_data[col].abs().sum()
+            totals[source][col] = total_abs if total_abs > 0 else 0.0
+    
+    # --- Stage 2: Geometric mean scale factor per column ---
+    geo_scale = {}
+    for col in available_cols:
+        # Collect non-zero totals for this column across sources
+        col_totals = [totals[src][col] for src in sources if totals[src][col] > 0]
+        if len(col_totals) >= 2:
+            # Geometric mean: exp(mean(log(x)))
+            geo_scale[col] = np.exp(np.mean(np.log(col_totals)))
+        elif len(col_totals) == 1:
+            # Only one source has data — use its total as-is (no scaling)
+            geo_scale[col] = col_totals[0]
+        else:
+            geo_scale[col] = 0.0
+    
+    # --- Stage 3: Normalize each source, scale back to geo_scale magnitude ---
+    # Build per-source, per-column normalization factors
+    # col_norm[source][col] = geo_scale[col] / totals[source][col]
+    # Multiply each source's column values by this factor
+    
+    for df in [calls, puts]:
+        if df.empty or '_source' not in df.columns:
+            continue
+        for source in sources:
+            source_mask = df['_source'] == source
+            if not source_mask.any():
+                continue
+            for col in available_cols:
+                src_total = totals[source][col]
+                if src_total > 0 and geo_scale[col] > 0:
+                    norm_factor = geo_scale[col] / src_total
+                    df.loc[source_mask, col] = df.loc[source_mask, col] * norm_factor
+                # If src_total == 0, values are already 0 — no change needed
+    
+    return calls, puts
+
+
 @st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
 def fetch_options_for_date(ticker, date, S=None):
     """Fetch options data for a specific date with caching"""
@@ -667,9 +747,11 @@ def fetch_options_for_date(ticker, date, S=None):
         puts_list = []
         component_count = 0
         
-        # Helper to fetch, normalize to percentage, and map to SPX-equivalent strikes
+        # Helper to fetch, map to SPX-equivalent strikes, and tag source
+        # Raw OI/Volume are preserved — per-Greek normalization happens post-exposure computation
         def add_normalized_data(tick, etf_price, is_spx=False):
             nonlocal component_count
+            source_label = "SPX" if tick == "^SPX" else tick
             try:
                 if is_spx:
                     # Use already fetched SPX data
@@ -678,14 +760,9 @@ def fetch_options_for_date(ticker, date, S=None):
                     # Fetch ETF options
                     c, p = fetch_options_for_date(tick, date, etf_price)
                 
-                # Calculate total OI/Volume for this component (for percentage normalization)
-                c_total_oi = c['openInterest'].sum() if not c.empty and 'openInterest' in c.columns else 0
-                c_total_vol = c['volume'].sum() if not c.empty and 'volume' in c.columns else 0
-                p_total_oi = p['openInterest'].sum() if not p.empty and 'openInterest' in p.columns else 0
-                p_total_vol = p['volume'].sum() if not p.empty and 'volume' in p.columns else 0
-                
                 if not c.empty:
                     c = c.copy()
+                    c['_source'] = source_label
                     
                     # For SPX: set original values before Gaussian spreading
                     if is_spx:
@@ -695,30 +772,16 @@ def fetch_options_for_date(ticker, date, S=None):
                     # For ETFs: Pre-calculate IV using ORIGINAL ETF values before strike mapping
                     # IV is scale-independent - transfers directly to SPX equivalent
                     if not is_spx and 'impliedVolatility' not in c.columns:
-                        # Calculate mid price for IV
                         c['_mid'] = (c['bid'].fillna(0) + c['ask'].fillna(0)) / 2
-                        # IV will be calculated downstream using yfinance IV or recalculated
                     
                     # Apply Gaussian spreading to ALL sources (including SPX) for consistent treatment
-                    # For SPX: moneyness=1.0 so no translation, but gets same Gaussian spread
                     c = map_to_spx_strikes(c, etf_price, spx_price)
-                    
-                    # DO NOT scale prices - IV from yfinance is already correct
-                    # Greeks will be calculated using IV directly (not from scaled prices)
-                    c['scale_factor'] = 1.0
-                    
-                    # Normalize OI and Volume to percentage of component total
-                    # Then scale to a common reference (1M contracts equivalent)
-                    reference_scale = 1_000_000
-                    if 'openInterest' in c.columns and c_total_oi > 0:
-                        c['openInterest'] = (c['openInterest'] / c_total_oi) * reference_scale
-                    if 'volume' in c.columns and c_total_vol > 0:
-                        c['volume'] = (c['volume'] / c_total_vol) * reference_scale
                     
                     calls_list.append(c)
                 
                 if not p.empty:
                     p = p.copy()
+                    p['_source'] = source_label
                     
                     # For SPX: set original values before Gaussian spreading
                     if is_spx:
@@ -731,16 +794,6 @@ def fetch_options_for_date(ticker, date, S=None):
                     
                     # Apply Gaussian spreading to ALL sources (including SPX)
                     p = map_to_spx_strikes(p, etf_price, spx_price)
-                    
-                    # DO NOT scale prices - IV from yfinance is already correct
-                    p['scale_factor'] = 1.0
-                    
-                    # Normalize OI and Volume to percentage of component total
-                    reference_scale = 1_000_000
-                    if 'openInterest' in p.columns and p_total_oi > 0:
-                        p['openInterest'] = (p['openInterest'] / p_total_oi) * reference_scale
-                    if 'volume' in p.columns and p_total_vol > 0:
-                        p['volume'] = (p['volume'] / p_total_vol) * reference_scale
                     
                     puts_list.append(p)
                 
@@ -758,7 +811,7 @@ def fetch_options_for_date(ticker, date, S=None):
         combined_calls = pd.concat(calls_list, ignore_index=True) if calls_list else pd.DataFrame()
         combined_puts = pd.concat(puts_list, ignore_index=True) if puts_list else pd.DataFrame()
         
-        # Clean up any NaN values in OI/volume before normalization
+        # Clean up any NaN values in OI/volume
         if not combined_calls.empty:
             combined_calls['openInterest'] = combined_calls['openInterest'].fillna(0)
             if 'volume' in combined_calls.columns:
@@ -768,69 +821,8 @@ def fetch_options_for_date(ticker, date, S=None):
             if 'volume' in combined_puts.columns:
                 combined_puts['volume'] = combined_puts['volume'].fillna(0)
         
-        # Post-normalization: Force equal contribution from each source at every strike
-        # This ensures SPX, SPY, QQQ, IWM each contribute 25% at every strike bucket
-        def post_normalize(df):
-            if df.empty or '_original_spot' not in df.columns:
-                return df
-            
-            df = df.copy()
-            
-            # Fill any NaN in _original_spot (shouldn't happen but safety)
-            if df['_original_spot'].isna().any():
-                df = df.dropna(subset=['_original_spot'])
-            
-            # Identify source from original spot price
-            def get_source(spot):
-                if abs(spot - spx_price) < 1: return "SPX"
-                if abs(spot - spy_price) < 1: return "SPY"
-                if abs(spot - qqq_price) < 1: return "QQQ"
-                return "IWM"
-            
-            df['_source'] = df['_original_spot'].apply(get_source)
-            
-            # For each strike, normalize so each source contributes equally
-            for strike in df['strike'].unique():
-                strike_mask = df['strike'] == strike
-                strike_data = df[strike_mask]
-                
-                # Only count sources that actually have OI at this strike
-                sources_with_oi = []
-                for source in strike_data['_source'].unique():
-                    source_oi = strike_data[strike_data['_source'] == source]['openInterest'].sum()
-                    if source_oi > 0:
-                        sources_with_oi.append(source)
-                
-                num_sources = len(sources_with_oi)
-                
-                if num_sources > 1:
-                    # Calculate total OI at this strike
-                    total_oi = strike_data['openInterest'].sum()
-                    total_vol = strike_data['volume'].sum() if 'volume' in strike_data.columns else 0
-                    
-                    # Target: each source with OI gets equal share
-                    target_per_source_oi = total_oi / num_sources
-                    target_per_source_vol = total_vol / num_sources
-                    
-                    for source in sources_with_oi:
-                        source_mask = strike_mask & (df['_source'] == source)
-                        source_oi = df.loc[source_mask, 'openInterest'].sum()
-                        
-                        # Scale factor to make this source contribute its equal share
-                        scale = target_per_source_oi / source_oi
-                        df.loc[source_mask, 'openInterest'] = df.loc[source_mask, 'openInterest'] * scale
-                        
-                        if 'volume' in df.columns:
-                            source_vol = df.loc[source_mask, 'volume'].sum()
-                            if source_vol > 0:
-                                vol_scale = target_per_source_vol / source_vol
-                                df.loc[source_mask, 'volume'] = df.loc[source_mask, 'volume'] * vol_scale
-            
-            return df
-        
-        combined_calls = post_normalize(combined_calls)
-        combined_puts = post_normalize(combined_puts)
-        
+        # Per-Greek normalization is applied post-exposure computation in compute_greeks_and_charts
+        # via normalize_market_components(). Raw OI/Volume are passed through here.
         return combined_calls, combined_puts
 
     print(f"Fetching option chain for {ticker} EXP {date}")
@@ -843,211 +835,15 @@ def fetch_options_for_date(ticker, date, S=None):
         if not calls.empty:
             calls = calls.copy()
             calls['extracted_expiry'] = calls['contractSymbol'].apply(extract_expiry_from_contract)
-            calls['scale_factor'] = 1.0
         if not puts.empty:
             puts = puts.copy()
             puts['extracted_expiry'] = puts['contractSymbol'].apply(extract_expiry_from_contract)
-            puts['scale_factor'] = 1.0
             
         return calls, puts
     except Exception as e:
         st.error(f"Error fetching options data: {e}")
         return pd.DataFrame(), pd.DataFrame()
 
-@st.cache_data(ttl=get_cache_ttl(), show_spinner=False)  # Cache TTL matches refresh rate
-def fetch_all_options(ticker):
-    """Fetch all available options with caching"""
-    print(f"Fetching all options for {ticker}")
-    
-    if ticker == "MARKET":
-        spx_price = get_current_price("^SPX")
-        if not spx_price: return pd.DataFrame(), pd.DataFrame()
-        
-        spy_price = get_current_price("SPY")
-        qqq_price = get_current_price("QQQ") 
-        iwm_price = get_current_price("IWM")
-        
-        # First, fetch SPX options to get the actual strike grid
-        spx_calls, spx_puts = fetch_all_options("^SPX")
-        if spx_calls.empty and spx_puts.empty:
-            return pd.DataFrame(), pd.DataFrame()
-        
-        calls_list = []
-        puts_list = []
-        component_count = 0
-        
-        # Helper to fetch, normalize to percentage, and map to SPX-equivalent strikes
-        def process_component(tick, etf_price, is_spx=False):
-            nonlocal component_count
-            try:
-                if is_spx:
-                    # Use already fetched SPX data
-                    c, p = spx_calls.copy(), spx_puts.copy()
-                else:
-                    c, p = fetch_all_options(tick)
-                
-                # Calculate total OI/Volume for this component (for percentage normalization)
-                c_total_oi = c['openInterest'].sum() if not c.empty and 'openInterest' in c.columns else 0
-                c_total_vol = c['volume'].sum() if not c.empty and 'volume' in c.columns else 0
-                p_total_oi = p['openInterest'].sum() if not p.empty and 'openInterest' in p.columns else 0
-                p_total_vol = p['volume'].sum() if not p.empty and 'volume' in p.columns else 0
-                
-                if not c.empty:
-                    c = c.copy()
-                    
-                    # For SPX: set original values before Gaussian spreading
-                    if is_spx:
-                        c['_original_strike'] = c['strike']
-                        c['_original_spot'] = etf_price
-                    
-                    # Apply Gaussian spreading to ALL sources (including SPX)
-                    c = map_to_spx_strikes(c, etf_price, spx_price)
-                    
-                    # DO NOT scale prices - IV from yfinance is already correct
-                    # Greeks will be calculated using IV directly (not from scaled prices)
-                    c['scale_factor'] = 1.0
-                    
-                    # Normalize OI and Volume to percentage of component total
-                    # Then scale to a common reference (1M contracts equivalent)
-                    reference_scale = 1_000_000
-                    if 'openInterest' in c.columns and c_total_oi > 0:
-                        c['openInterest'] = (c['openInterest'] / c_total_oi) * reference_scale
-                    if 'volume' in c.columns and c_total_vol > 0:
-                        c['volume'] = (c['volume'] / c_total_vol) * reference_scale
-                    
-                    calls_list.append(c)
-                if not p.empty:
-                    p = p.copy()
-                    
-                    # For SPX: set original values before Gaussian spreading
-                    if is_spx:
-                        p['_original_strike'] = p['strike']
-                        p['_original_spot'] = etf_price
-                    
-                    # Apply Gaussian spreading to ALL sources (including SPX)
-                    p = map_to_spx_strikes(p, etf_price, spx_price)
-                    
-                    # DO NOT scale prices - IV from yfinance is already correct
-                    p['scale_factor'] = 1.0
-                    
-                    # Normalize OI and Volume to percentage of component total
-                    reference_scale = 1_000_000
-                    if 'openInterest' in p.columns and p_total_oi > 0:
-                        p['openInterest'] = (p['openInterest'] / p_total_oi) * reference_scale
-                    if 'volume' in p.columns and p_total_vol > 0:
-                        p['volume'] = (p['volume'] / p_total_vol) * reference_scale
-                    
-                    puts_list.append(p)
-                
-                component_count += 1
-            except: pass
-        
-        # Add SPX first (using already fetched data)
-        process_component("^SPX", spx_price, is_spx=True)
-        # Add other products, mapping to SPX strike grid
-        if spy_price: process_component("SPY", spy_price)
-        if qqq_price: process_component("QQQ", qqq_price)
-        if iwm_price: process_component("IWM", iwm_price)
-        
-        combined_calls = pd.concat(calls_list, ignore_index=True) if calls_list else pd.DataFrame()
-        combined_puts = pd.concat(puts_list, ignore_index=True) if puts_list else pd.DataFrame()
-        
-        # Clean up any NaN values in OI/volume before normalization
-        if not combined_calls.empty:
-            combined_calls['openInterest'] = combined_calls['openInterest'].fillna(0)
-            if 'volume' in combined_calls.columns:
-                combined_calls['volume'] = combined_calls['volume'].fillna(0)
-        if not combined_puts.empty:
-            combined_puts['openInterest'] = combined_puts['openInterest'].fillna(0)
-            if 'volume' in combined_puts.columns:
-                combined_puts['volume'] = combined_puts['volume'].fillna(0)
-        
-        # Post-normalization: Force equal contribution from each source at every strike
-        def post_normalize(df):
-            if df.empty or '_original_spot' not in df.columns:
-                return df
-            
-            df = df.copy()
-            
-            # Drop rows with missing _original_spot
-            if df['_original_spot'].isna().any():
-                df = df.dropna(subset=['_original_spot'])
-            
-            def get_source(spot):
-                if abs(spot - spx_price) < 1: return "SPX"
-                if abs(spot - spy_price) < 1: return "SPY"
-                if abs(spot - qqq_price) < 1: return "QQQ"
-                return "IWM"
-            
-            df['_source'] = df['_original_spot'].apply(get_source)
-            
-            for strike in df['strike'].unique():
-                strike_mask = df['strike'] == strike
-                strike_data = df[strike_mask]
-                
-                # Only count sources that actually have OI at this strike
-                sources_with_oi = []
-                for source in strike_data['_source'].unique():
-                    source_oi = strike_data[strike_data['_source'] == source]['openInterest'].sum()
-                    if source_oi > 0:
-                        sources_with_oi.append(source)
-                
-                num_sources = len(sources_with_oi)
-                
-                if num_sources > 1:
-                    total_oi = strike_data['openInterest'].sum()
-                    total_vol = strike_data['volume'].sum() if 'volume' in strike_data.columns else 0
-                    target_per_source_oi = total_oi / num_sources
-                    target_per_source_vol = total_vol / num_sources
-                    
-                    for source in sources_with_oi:
-                        source_mask = strike_mask & (df['_source'] == source)
-                        source_oi = df.loc[source_mask, 'openInterest'].sum()
-                        
-                        scale = target_per_source_oi / source_oi
-                        df.loc[source_mask, 'openInterest'] = df.loc[source_mask, 'openInterest'] * scale
-                        
-                        if 'volume' in df.columns:
-                            source_vol = df.loc[source_mask, 'volume'].sum()
-                            if source_vol > 0:
-                                vol_scale = target_per_source_vol / source_vol
-                                df.loc[source_mask, 'volume'] = df.loc[source_mask, 'volume'] * vol_scale
-            
-            return df
-        
-        combined_calls = post_normalize(combined_calls)
-        combined_puts = post_normalize(combined_puts)
-        
-        return combined_calls, combined_puts
-
-    try:
-        stock = get_ticker_object(ticker)
-        all_calls = []
-        all_puts = []
-        
-        for next_exp in stock.options:
-            try:
-                calls, puts = fetch_options_for_date(ticker, next_exp)
-                if not calls.empty:
-                    all_calls.append(calls.copy())
-                if not puts.empty:
-                    all_puts.append(puts.copy())
-            except Exception as e:
-                st.error(f"Error fetching fallback options data: {e}")
-        
-        if all_calls:
-            combined_calls = pd.concat(all_calls, ignore_index=True)
-        else:
-            combined_calls = pd.DataFrame()
-        if all_puts:
-            combined_puts = pd.concat(all_puts, ignore_index=True)
-        else:
-            combined_puts = pd.DataFrame()
-        
-        return combined_calls, combined_puts
-    except Exception as e:
-        st.error(f"Error fetching all options: {e}")
-        return pd.DataFrame(), pd.DataFrame()
 
 def get_chart_key(base_key):
     """Generate a unique chart key that includes the page render ID to prevent cross-page caching"""
@@ -5009,25 +4805,21 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
     # Determine which metric to use based on settings
     metric_type = st.session_state.get('exposure_metric', 'Open Interest')
     
-    # Get scale_factor (1.0 for all tickers - MARKET data is pre-normalized during fetch)
-    c_scale = calls.get('scale_factor', 1.0)
-    p_scale = puts.get('scale_factor', 1.0)
-    
     if metric_type == 'Volume':
-        calls_metric = calls['volume'] * c_scale
-        puts_metric = puts['volume'] * p_scale
+        calls_metric = calls['volume']
+        puts_metric = puts['volume']
     elif metric_type == 'OI Weighted by Volume':
         # Geometric Mean: sqrt(OI * Volume)
-        calls_vol = calls['volume'].fillna(0) * c_scale
-        puts_vol = puts['volume'].fillna(0) * p_scale
-        calls_oi = calls['openInterest'].fillna(0) * c_scale
-        puts_oi = puts['openInterest'].fillna(0) * p_scale
+        calls_vol = calls['volume'].fillna(0)
+        puts_vol = puts['volume'].fillna(0)
+        calls_oi = calls['openInterest'].fillna(0)
+        puts_oi = puts['openInterest'].fillna(0)
         
         calls_metric = np.sqrt(calls_oi * calls_vol)
         puts_metric = np.sqrt(puts_oi * puts_vol)
     else: # Open Interest
-        calls_metric = calls['openInterest'] * c_scale
-        puts_metric = puts['openInterest'] * p_scale
+        calls_metric = calls['openInterest']
+        puts_metric = puts['openInterest']
 
     # Determine if we should calculate in notional (dollars) or underlying units (shares/index units)
     use_notional = st.session_state.get('calculate_in_notional', True)
@@ -5093,6 +4885,11 @@ def compute_greeks_and_charts(ticker, expiry_date_str, page_key, S):
 
         calls["Color"] = calls["Color"] * calls["calc_delta"].abs()
         puts["Color"] = puts["Color"] * puts["calc_delta"].abs()
+
+    # Per-Greek geometric mean normalization for MARKET composite
+    # Applied after all exposures are computed so each column gets its own independent factor
+    if ticker == "MARKET" and '_source' in calls.columns:
+        calls, puts = normalize_market_components(calls, puts)
 
     return calls, puts, S, t, selected_expiry, today
 
