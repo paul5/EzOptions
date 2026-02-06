@@ -517,6 +517,41 @@ def calculate_strike_range(current_price, percentage=None):
         percentage = st.session_state.get('strike_range', 1.0)
     return current_price * (percentage / 100.0)
 
+def add_heatmap_highlight(fig, data_matrix, x_labels, y_labels, is_global_norm, highlight_color):
+    """Add outline rectangles around highest exposure values in heatmap"""
+    if data_matrix.size == 0:
+        return
+    
+    cells_to_highlight = []
+    
+    if is_global_norm:
+        # Global normalization: highlight single highest value
+        max_idx = np.nanargmax(np.abs(data_matrix))
+        if not np.isnan(max_idx):
+            row_idx, col_idx = np.unravel_index(max_idx, data_matrix.shape)
+            cells_to_highlight.append((row_idx, col_idx))
+    else:
+        # Per expiration: highlight highest in each column
+        for col in range(data_matrix.shape[1]):
+            col_data = np.abs(data_matrix[:, col])
+            if np.any(col_data > 0):
+                row_idx = np.nanargmax(col_data)
+                cells_to_highlight.append((row_idx, col))
+    
+    # Draw rectangles around highlighted cells
+    for row_idx, col_idx in cells_to_highlight:
+        fig.add_shape(
+            type='rect',
+            x0=col_idx - 0.5,
+            x1=col_idx + 0.5,
+            y0=row_idx - 0.5,
+            y1=row_idx + 0.5,
+            line=dict(color=highlight_color, width=3),
+            fillcolor='rgba(0,0,0,0)',
+            xref='x',
+            yref='y'
+        )
+
 def map_to_spx_strikes(df, etf_price, spx_price, bucket_size=10):
     """
     Maps ETF strikes to SPX-equivalent strikes using moneyness, then distributes
@@ -9403,7 +9438,7 @@ elif st.session_state.current_page == "Exposure Heatmap":
                 with col_norm:
                     normalization_method = st.selectbox(
                         "Normalization Method:",
-                        options=["Per Expiration", "Global"],
+                        options=["Per Expiration", "Global", "Ranked Intensity"],
                         index=0,
                         key="heatmap_normalization"
                     )
@@ -9527,6 +9562,22 @@ elif st.session_state.current_page == "Exposure Heatmap":
                     max_net_abs = np.nanmax(np.abs(net_exposure))
                     if max_net_abs > 0:
                         net_exposure_norm = net_exposure / max_net_abs
+                        
+                elif normalization_method == "Ranked Intensity":
+                    # Ranked Intensity Normalization - aggressively fade lower values using power of 3
+                    max_call = np.nanmax(call_exposure)
+                    if max_call > 0:
+                        call_exposure_norm = np.power(call_exposure / max_call, 3)
+                        
+                    max_put = np.nanmax(put_exposure)
+                    if max_put > 0:
+                        put_exposure_norm = np.power(put_exposure / max_put, 3)
+                        
+                    max_net_abs = np.nanmax(np.abs(net_exposure))
+                    if max_net_abs > 0:
+                        # For net exposure, preserve sign and apply power to absolute values
+                        net_exposure_norm = np.sign(net_exposure) * np.power(np.abs(net_exposure) / max_net_abs, 3)
+                        
                 else:
                     # Per Expiration Normalization (Default)
                     # Normalize Call Exposure
@@ -9629,6 +9680,12 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         margin=dict(r=100)
                     )
                     
+                    # Add highlight outline if enabled
+                    if st.session_state.get('highlight_highest_exposure', False):
+                        is_global = normalization_method in ["Global", "Ranked Intensity"]
+                        add_heatmap_highlight(fig_calls, call_exposure, date_labels, filtered_strikes, 
+                                            is_global, st.session_state.get('highlight_color', '#BF40BF'))
+                    
                     st.plotly_chart(fig_calls, width='stretch', key=get_chart_key("heatmap_calls_chart"))
                 
                 # Put Exposure Heatmap
@@ -9688,6 +9745,12 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         margin=dict(r=100)
                     )
                     
+                    # Add highlight outline if enabled
+                    if st.session_state.get('highlight_highest_exposure', False):
+                        is_global = normalization_method in ["Global", "Ranked Intensity"]
+                        add_heatmap_highlight(fig_puts, put_exposure, date_labels, filtered_strikes, 
+                                            is_global, st.session_state.get('highlight_color', '#BF40BF'))
+                    
                     st.plotly_chart(fig_puts, width='stretch', key=get_chart_key("heatmap_puts_chart"))
                 
                 # Net Exposure Heatmap
@@ -9746,6 +9809,12 @@ elif st.session_state.current_page == "Exposure Heatmap":
                         ),
                         margin=dict(r=100)
                     )
+                    
+                    # Add highlight outline if enabled
+                    if st.session_state.get('highlight_highest_exposure', False):
+                        is_global = normalization_method in ["Global", "Ranked Intensity"]
+                        add_heatmap_highlight(fig_net, net_exposure, date_labels, filtered_strikes, 
+                                            is_global, st.session_state.get('highlight_color', '#BF40BF'))
                     
                     st.plotly_chart(fig_net, width='stretch', key=get_chart_key("heatmap_net_chart"))
                 
