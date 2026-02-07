@@ -7657,17 +7657,25 @@ elif st.session_state.current_page == "Dashboard":
 
                                 for row in top_levels.itertuples():
                                     if row.strike not in added_strikes and not pd.isna(row.Value) and row.Value != 0:
-                                        # Calculate intensity based on value relative to max
-                                        intensity = max(0.6, min(1.0, row.abs_Value / max_val))
+                                        # Check if this is the maximum value for this exposure type
+                                        is_max_for_type = (row.abs_Value == max_val) and st.session_state.get('highlight_highest_exposure', False)
                                         
-                                        # Determine color based on sign (positive = call color, negative = put color)
-                                        base_color = st.session_state.call_color if row.Value >= 0 else st.session_state.put_color
-                                        
-                                        # Convert hex to RGB
-                                        rgb = tuple(int(base_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-                                        
-                                        # Create color with intensity
-                                        color = f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {intensity})'
+                                        # Determine color
+                                        if is_max_for_type:
+                                            # Use highlight color for maximum exposure level
+                                            color = st.session_state.get('highlight_color', '#BF40BF')
+                                        else:
+                                            # Calculate intensity based on value relative to max
+                                            intensity = max(0.6, min(1.0, row.abs_Value / max_val))
+                                            
+                                            # Determine color based on sign (positive = call color, negative = put color)
+                                            base_color = st.session_state.call_color if row.Value >= 0 else st.session_state.put_color
+                                            
+                                            # Convert hex to RGB
+                                            rgb = tuple(int(base_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+                                            
+                                            # Create color with intensity
+                                            color = f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {intensity})'
                                         
                                         # Line style: Solid for GEX, Dash for others
                                         dash_style = 'solid' if exposure_type == 'GEX' else 'dash'
