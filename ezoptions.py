@@ -7624,10 +7624,10 @@ elif st.session_state.current_page == "Dashboard":
                             # Calculate Net or Absolute Exposure
                             if exposure_type == 'GEX' and st.session_state.gex_type == 'Absolute':
                                 # Absolute GEX: Magnitude with sign based on net
-                                calls_exp = calls_filtered.groupby('strike')[exposure_type].sum()
-                                puts_exp = puts_filtered.groupby('strike')[exposure_type].sum()
-                                net_gex = calls_exp.sub(puts_exp, fill_value=0)  # Net for sign
-                                abs_magnitude = calls_exp.abs().add(puts_exp.abs(), fill_value=0)  # Absolute magnitude
+                                calls_gex = calls_filtered.groupby('strike')[exposure_type].sum()
+                                puts_gex = puts_filtered.groupby('strike')[exposure_type].sum()
+                                net_gex = calls_gex.sub(puts_gex, fill_value=0)  # Net for sign
+                                abs_magnitude = calls_gex.abs().add(puts_gex.abs(), fill_value=0)  # Absolute magnitude
                                 net_exp = abs_magnitude * np.sign(net_gex)
                             elif exposure_type == 'GEX':
                                 # Net GEX: Calls positive, Puts negative
@@ -7677,8 +7677,8 @@ elif st.session_state.current_page == "Dashboard":
                                             # Create color with intensity
                                             color = f'rgba({rgb[0]}, {rgb[1]}, {rgb[2]}, {intensity})'
                                         
-                                        # Line style: Solid for GEX, Dash for others
-                                        dash_style = 'solid' if exposure_type == 'GEX' else 'dash'
+                                        # All exposure levels use dashed lines for visual consistency
+                                        dash_style = 'dash'
                                         
                                         fig_intraday.add_shape(
                                             type='line',
